@@ -376,21 +376,37 @@ static uint32_t scripted_buttons(void) {
  *     A  confirm          B  cancel            (as the console labels them:
  *     X, Y                the game's third and tenth pad buttons   on a PC pad the
  *     L, R                its fourth and fifth                     lower button
- *     ZL, ZR              its ninth and sixth                      confirms)
+ *     ZL                  its ninth                                confirms)
+ *     ZR                  turbo: the game runs faster while it is held
  *     +, -                its seventh and eighth
+ *     the right stick pressed in: its sixth; the left: the guide
  *
  * DirectInput, which is how the game itself finds a pad, is not answered yet;
  * this needs none of it. */
 #include <SDL.h>
 #define FC_MOUSE_IN_USE 0x00557E5Eu   /* byte: set while the mouse drives the menus */
 #define FC_MOUSE_MODE   0x006B0018u   /* byte: mouse mode */
-enum { B_UP = 0x1, B_DOWN = 0x2, B_RIGHT = 0x4, B_LEFT = 0x8, B_CONFIRM = 0x60, B_CANCEL = 0x90, B_PAD3 = 0x400000,
-       B_PAD4 = 0x400, B_PAD5 = 0x800, B_PAD6 = 0x8000, B_PAD7 = 0x10000, B_PAD8 = 0x20000, B_PAD9 = 0x200, B_PAD10 = 0x800000 };
-static uint32_t pad_buttons(void) {
+#define B_UP 0x1ull
+#define B_DOWN 0x2ull
+#define B_RIGHT 0x4ull
+#define B_LEFT 0x8ull
+#define B_CONFIRM 0x60ull
+#define B_CANCEL 0x90ull
+#define B_PAD3 0x400000ull
+#define B_PAD4 0x400ull
+#define B_PAD5 0x800ull
+#define B_PAD6 0x8000ull
+#define B_PAD7 0x10000ull
+#define B_PAD8 0x20000ull
+#define B_PAD9 0x200ull
+#define B_PAD10 0x800000ull
+#define B_GUIDE (1ull << 32)          /* the two buttons of the mask's upper half */
+#define B_TURBO (1ull << 33)
+static uint64_t pad_buttons(void) {
     static SDL_Joystick* joy;
     static SDL_GameController* pad;
     static int tried;
-    uint32_t b = 0;
+    uint64_t b = 0;
     int x = 0, y = 0;
     if (!tried) {
         tried = 1;
@@ -402,7 +418,8 @@ static uint32_t pad_buttons(void) {
         fprintf(stderr, "[pad] %s\n", pad ? SDL_GameControllerName(pad) : joy ? SDL_JoystickName(joy) : "none could be opened");
     }
     if (pad) {
-        static const struct { SDL_GameControllerButton from; uint32_t to; } map[] = {
+        static const struct { SDL_GameControllerButton from; uint64_t to; } map[] = {
+            { SDL_CONTROLLER_BUTTON_RIGHTSTICK, B_PAD6 }, { SDL_CONTROLLER_BUTTON_LEFTSTICK, B_GUIDE },
             { SDL_CONTROLLER_BUTTON_A, B_CONFIRM }, { SDL_CONTROLLER_BUTTON_B, B_CANCEL }, { SDL_CONTROLLER_BUTTON_X, B_PAD3 },
             { SDL_CONTROLLER_BUTTON_Y, B_PAD10 }, { SDL_CONTROLLER_BUTTON_LEFTSHOULDER, B_PAD4 },
             { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, B_PAD5 }, { SDL_CONTROLLER_BUTTON_START, B_PAD7 },
@@ -413,12 +430,12 @@ static uint32_t pad_buttons(void) {
         SDL_GameControllerUpdate();
         for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) if (SDL_GameControllerGetButton(pad, map[i].from)) b |= map[i].to;
         if (SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 12000) b |= B_PAD9;
-        if (SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000) b |= B_PAD6;
+        if (SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000) b |= B_TURBO;
         x = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX), y = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
     } else if (joy) {
         /* The console's own pad, in the order its buttons are numbered: A, B, X,
          * Y, the two sticks, L, R, ZL, ZR, plus, minus, then left, up, right, down. */
-        static const uint32_t map[16] = { B_CONFIRM, B_CANCEL, B_PAD3, B_PAD10, 0, 0, B_PAD4, B_PAD5, B_PAD9, B_PAD6,
+        static const uint64_t map[16] = { B_CONFIRM, B_CANCEL, B_PAD3, B_PAD10, B_GUIDE, B_PAD6, B_PAD4, B_PAD5, B_PAD9, B_TURBO,
                                           B_PAD7, B_PAD8, B_LEFT, B_UP, B_RIGHT, B_DOWN };
         SDL_JoystickUpdate();
         for (int i = 0; i < 16 && i < SDL_JoystickNumButtons(joy); i++) if (SDL_JoystickGetButton(joy, i)) b |= map[i];
@@ -439,11 +456,12 @@ void fc_wrap_004802C0(void) {
         g_edx = 0;
         return;
     }
-    uint32_t held = pad_buttons();
+    uint64_t held = pad_buttons();
     if (held) {
         MEM8(FC_MOUSE_IN_USE) = 0;        /* the menus follow the buttons, not a pointer that is not moving */
         MEM8(FC_MOUSE_MODE) = 0;
-        g_eax |= held;
+        g_eax |= (uint32_t)held;
+        g_edx |= (uint32_t)(held >> 32);
     }
 }
 void fc_wrap_004C11A0(void) { fc_orig_004C11A0(); }

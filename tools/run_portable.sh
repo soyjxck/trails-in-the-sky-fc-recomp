@@ -9,7 +9,8 @@
 # LIMIT is the most seconds the run may take (default 300), TAIL how much of
 # the log to show, ARGS more options for the host. SOUND=1 switches music and
 # sound effects on in the run's settings; nothing is heard either way (SDL's
-# dummy audio driver takes the samples).
+# dummy audio driver takes the samples). MOVIES=1 switches the logo and
+# opening movies on.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FRAMES=${1:-600}
@@ -21,6 +22,9 @@ mkdir -p "$RUN/shots"
 if [ -d "$ROOT/run/saves_base" ]; then cp -r "$ROOT/run/saves_base" "$RUN/saves"; else mkdir -p "$RUN/saves"; fi
 if [ -n "${SOUND:-}" ] && [ -f "$RUN/saves/FALCOM/ED6/config.ini" ]; then
   sed -i 's/^\(BgmOff\|SeOff\)=1/\1=0/' "$RUN/saves/FALCOM/ED6/config.ini"
+fi
+if [ -n "${MOVIES:-}" ] && [ -f "$RUN/saves/FALCOM/ED6/config.ini" ]; then
+  sed -i 's/^LogoPlayOff=1/LogoPlayOff=0/; s/^OpeningPlayOff=1/OpeningPlayOff=0/' "$RUN/saves/FALCOM/ED6/config.ini"
 fi
 cd "${GAME:-$ROOT/Trails in the Sky FC}"
 code=0
