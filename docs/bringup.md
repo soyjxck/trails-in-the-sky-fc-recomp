@@ -142,3 +142,52 @@ the reset failed and the game left: through its own `throw`, its own `catch`
 and the C runtime's `exit`, which is also the first full trip through the
 guest's exception handling. The host's `Reset` now waits for the device to
 become resettable first, a fix the original does not have.
+
+## 8. The catalog decides whether the lift is right
+
+The first catalog was seeded with a symbol-matching disassembler's function
+list for this exe (4,109 starts). To check the steps a clean checkout would
+take, the game was lifted again from a catalog seeded with the RTTI vtable
+slots alone. It built, and ran at six frames a second: 158 frames in 25
+seconds on the title screen, against 2,500.
+
+The two catalogs differ in 54 entries. Without the seeds, `disasm32`'s scan of
+data for code pointers takes nine addresses inside large functions for
+function starts, round ones among them (0x00436000, 0x00437000, 0x00438000),
+and a start is a wall: the body before it ends there, and what was one
+function is lifted as two. Which of them breaks the timing was not chased;
+the catalog is what is wrong, and a correct one is cheap.
+
+So the starts are in the repository, as `config/function_starts.json`: the
+4,109 addresses and nothing else. `disasm32 --seed-functions` with that file
+reproduces the catalog the lift is tested with, entry for entry (7,220).
+
+## 9. In game
+
+Input for hands-off runs is a script of button presses (`--script`,
+`tests/*.txt`): `Input_Poll` (0x004802C0) returns the buttons held in
+`edx:eax`, the lift emits it under another name and calls the host's wrapper
+(`WRAPS` in `run_lift.py`), and while a script plays the wrapper answers with
+the script's buttons. With that, unattended, each ending with the game
+closed through its own window procedure, `throw`, `catch` and `exit`:
+
+| script | what it plays | frames |
+|---|---|---|
+| `tests/title.txt` | the title menu, the difficulty dialog and back | 1,288 |
+| `tests/new_game.txt` | a new game: the opening scenes and their dialogue | 15,683 |
+| load a save | the save list, a save from the final chapter, walking about | 4,577 |
+| a battle | a save from chapter 2, into three monsters, the fight won | 13,588 |
+| a shop | the camp menu, talking, buying, a map change, an NPC | 7,965 |
+
+No fault, no unresolved call and no instruction lifted as a no-op was
+reached in any of them. About 100 frames a second throughout.
+
+Sound runs too, unheard: `--silent` mutes the process's audio session, and
+with music and effects switched on the multimedia timer's thread calls the
+lifted music stream 83 times in 15 seconds (0x004A93C0), with the Ogg
+decoder's read and seek callbacks between: the first lifted code on a second
+thread, through native32's machine lock.
+
+Not tested yet: the game in a visible window with a real keyboard, mouse or
+pad; what the sound sounds like; and the logo and opening movies, which
+did not start in an unattended run even when switched on in `config.ini`.

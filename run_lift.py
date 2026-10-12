@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import struct
 import sys
 import time
@@ -50,10 +51,10 @@ NAMES = os.path.join(_HERE, 'work', 'names.json')
 OUT = os.path.join(_HERE, 'src', 'recomp', 'gen')
 STATS = os.path.join(_HERE, 'work', 'lift_stats.json')
 
-# Entries no scan finds, so a clean checkout lifts them too: two small C
-# runtime functions that only a symbol-matching disassembler names
-# (docs/RECON.md, the function catalog).
-RUN_SEEDS = [0x004FBE66, 0x00500231]
+# Entries a run finds that the catalog does not have (an unresolved ICALL
+# names its target), so a clean checkout lifts them too. None so far: the
+# catalog is seeded with config/function_starts.json (docs/bringup.md, 8).
+RUN_SEEDS = []
 
 # Functions whose body is the host's instead of the lift: the host defines
 # fc_hook_XXXXXXXX(void) and it runs like an import shim (src/runtime/host.c).
@@ -61,6 +62,13 @@ RUN_SEEDS = [0x004FBE66, 0x00500231]
 #               a throw is not an import native32 can answer by name: it is
 #               this function, which would raise on the host's SEH chain.
 HOOKS = {0x004FD597}
+
+# Functions the host wraps: the lift is emitted as fc_orig_XXXXXXXX and the
+# function itself calls the host's fc_wrap_XXXXXXXX(void), which decides
+# whether and when to run the original (src/runtime/host.c).
+#   0x004802C0  Input_Poll: the buttons held, in edx:eax. A play script
+#               (--script) answers instead of the keyboard.
+WRAPS = {0x004802C0}
 
 # Fixes to the game itself: C run after the instruction at the address.
 # The lift stays faithful; a patch is for a fix the original cannot have.
@@ -92,6 +100,22 @@ def exe_stamp(path):
         head = f.read(4096)
     nt = int.from_bytes(head[0x3C:0x40], 'little')
     return int.from_bytes(head[nt + 8:nt + 12], 'little')
+
+
+def sync_dir(new, old):
+    """Make `old` equal to `new`, touching only the files that differ; removes `new`."""
+    os.makedirs(old, exist_ok=True)
+    changed = 0
+    for fn in os.listdir(old):
+        if not os.path.exists(os.path.join(new, fn)):
+            os.remove(os.path.join(old, fn))
+    for fn in os.listdir(new):
+        a, b = os.path.join(new, fn), os.path.join(old, fn)
+        if not os.path.exists(b) or open(a, 'rb').read() != open(b, 'rb').read():
+            os.replace(a, b)
+            changed += 1
+    shutil.rmtree(new, ignore_errors=True)
+    return changed
 
 
 def mapped_reader(path):
@@ -184,10 +208,12 @@ def main():
     # (64-bit adds and subtracts; off by default in lift32 only for Fury3).
     patches = dict(PATCHES)
     lifter = Lifter(iat_map=iat, lifted=set(byaddr), precise_carry=True, precise_sbb=True)
-    os.makedirs(args.out, exist_ok=True)
-    for fn in os.listdir(args.out):                 # a smaller lift must not leave stale chunks
-        if fn.startswith('recomp_') and fn.endswith('.c'):
-            os.remove(os.path.join(args.out, fn))
+    # Lifted into a scratch folder; at the end only the files that changed are
+    # replaced (and stale chunks removed), so a build after a small change to
+    # the lift compiles the chunks it altered, not all of them.
+    final_out, args.out = args.out, args.out.rstrip('\\/') + '.new'
+    shutil.rmtree(args.out, ignore_errors=True)
+    os.makedirs(args.out)
     entries, chunk, idx, errors, dirty, ehs, unimpl = [], [], 0, 0, 0, 0, {}
     ordered = sorted(byaddr)
     starts = {a for a in ordered if byaddr[a].get('entry_kind') != 'alias'}
@@ -233,9 +259,13 @@ def main():
                 leaders.add(addr)
             eh = eh_at.get(addr)
             ehs += bool(eh)
-            body = (lift_function_linear(lifter, name, insns, leaders, addr, eh_resume=eh) if insns
-                    else 'void %s(void) { }\n' % name)
+            inner = 'fc_orig_%08X' % addr if addr in WRAPS else name
+            body = (lift_function_linear(lifter, inner, insns, leaders, addr, eh_resume=eh) if insns
+                    else 'void %s(void) { }\n' % inner)
             body = apply_patches(body, {va: c for va, c in patches.items() if reached and va in reached})
+            if addr in WRAPS:
+                body += ('\nextern void fc_wrap_%08X(void);\nvoid %s(void) { fc_wrap_%08X(); }\n'
+                         % (addr, name, addr))
         except Exception as e:                      # noqa: BLE001 -- counted, not hidden
             body = '/* ERROR %s: %s */\nvoid %s(void) { }\n' % (name, e, name)
             errors += 1
@@ -316,6 +346,8 @@ def main():
 
     lines = sum(sum(1 for _ in open(os.path.join(args.out, fn), encoding='utf-8', errors='replace'))
                 for fn in os.listdir(args.out))
+    changed = sync_dir(args.out, final_out)
+    print('[*] %d of %d files changed in %s' % (changed, len(os.listdir(final_out)), final_out))
     stats = {'lifted': len(chosen), 'stubs': len(stubs), 'errors': errors,
              'no_terminator': dirty, 'eh_functions': ehs, 'files': idx, 'lines': lines,
              'unimplemented': dict(sorted(unimpl.items(), key=lambda kv: -kv[1]))}

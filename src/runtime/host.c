@@ -23,6 +23,8 @@
 
 #include <d3d9.h>
 #include <objbase.h>
+#include <mmdeviceapi.h>
+#include <audiopolicy.h>
 
 #include "native32.h"
 #include "recomp_trace.h"
@@ -37,7 +39,12 @@ extern const uint32_t fc_entry_va;    /* recomp_dispatch.c */
 static DWORD g_watchdog_s;
 static int   g_unattended;            /* window off screen, focus and pointer left alone */
 static int   g_force_active;          /* keep the game's clock running in an inactive window */
+static int   g_silent;                /* this process's audio session is muted */
 static HMODULE g_resources;           /* the guest exe as a resource module */
+static DWORD g_t0;                    /* GetTickCount at start, for the log's timestamps */
+static volatile LONG g_presents;      /* frames the game has presented */
+static char g_shots[MAX_PATH];        /* --shots: where frames are saved */
+static HWND g_window;                 /* the game's top-level window */
 
 #define ARG(n) MEM32(g_esp + 4 + 4 * (n))
 #define RET(nargs) (g_esp += 4 + 4 * (nargs))
@@ -234,6 +241,7 @@ static void shim_CreateWindowExW(void) {
     /* Created hidden and then shown without activation, so the focus stays where it was. */
     if (h && g_unattended && top && (style & WS_VISIBLE))
         SetWindowPos(h, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    if (h && top) g_window = h;
     fprintf(stderr, "[window] CreateWindowExW(%ls) style 0x%08X %dx%d -> %p\n",
             ARG(2) ? (const wchar_t*)(uintptr_t)ARG(2) : L"", style, (int)ARG(6), (int)ARG(7), (void*)h);
     g_eax = (uint32_t)(uintptr_t)h;
@@ -307,6 +315,148 @@ static void shim_MessageBoxW(void) {
     RET(4);
 }
 
+/* ---- play scripts -----------------------------------------------------------
+ * --script FILE plays a list of button presses, for hands-off test runs: the
+ * title menu, a new game, loading a save. Input_Poll (0x004802C0) returns the
+ * buttons held in edx:eax; the lift wraps it (WRAPS in run_lift.py), and
+ * while a script plays it is the only source of input.
+ *
+ *   wait <ms>
+ *   hold <button> <ms>
+ *   tap <button> [count] [interval ms]     press for 100 ms, `count` times
+ *   shot <name>                            save the next frame as <name>.png (--shots)
+ *   log <text>
+ *   quit                                   close the game's window
+ *
+ * Lines starting with # are comments; a button is a name below or a hex mask.
+ * Waits and long holds are timed at the game's pace, not the wall's: a poll
+ * moves that time on by the time since the poll before, but by no more than
+ * 34 ms, which is as far as the game's own clock goes in a frame. So a script
+ * keeps its place while the game loads something or the machine is busy. A
+ * press of a quarter of a second or less is timed by the wall clock all the
+ * same: stretched over a load it would be held long enough to repeat. */
+#define FC_MOUSE_IN_USE 0x00557E5Eu   /* byte: set while the mouse drives the input */
+#define FC_MOUSE_MODE   0x006B0018u   /* byte: mouse mode */
+
+static const struct { const char* name; uint32_t bit; } k_buttons[] = {
+    { "UP", 0x1 }, { "DOWN", 0x2 }, { "RIGHT", 0x4 }, { "LEFT", 0x8 }, { "ESC", 0x10 }, { "SPACE", 0x20 },
+    { "ENTER", 0x40 }, { "CTRL", 0x80 }, { "NUM0", 0x100 }, { "SHIFT", 0x200 }, { "Z", 0x400 }, { "X", 0x800 },
+    { "PGUP", 0x1000 }, { "PGDN", 0x2000 }, { "B", 0x8000 }, { "C", 0x10000 }, { "M", 0x20000 },
+    { "A", 0x400000 }, { "V", 0x800000 },
+};
+enum { STEP_WAIT, STEP_HOLD, STEP_SHOT, STEP_LOG, STEP_QUIT };
+typedef struct { int kind; uint32_t ms, buttons; char text[128]; } step_t;
+#define LONGEST_TAP_MS 250u
+
+static step_t* g_steps;
+static int g_nsteps, g_step, g_step_entered;
+static DWORD g_step_started, g_step_started_wall;
+static char g_shot_pending[64];       /* a script's `shot`, taken at the next Present */
+
+static uint32_t button_mask(const char* word) {
+    for (int i = 0; i < (int)(sizeof k_buttons / sizeof k_buttons[0]); i++)
+        if (!_stricmp(word, k_buttons[i].name)) return k_buttons[i].bit;
+    return strtoul(word, NULL, 16);
+}
+
+static void add_step(int kind, uint32_t ms, uint32_t buttons, const char* text) {
+    g_steps = (step_t*)realloc(g_steps, (g_nsteps + 1) * sizeof *g_steps);
+    step_t* s = &g_steps[g_nsteps++];
+    s->kind = kind, s->ms = ms, s->buttons = buttons;
+    strncpy(s->text, text, sizeof s->text - 1);
+    s->text[sizeof s->text - 1] = 0;
+}
+
+static int load_script(const char* path) {
+    FILE* f = fopen(path, "r");
+    char line[256];
+    if (!f) { fprintf(stderr, "[script] cannot open %s\n", path); return 1; }
+    while (fgets(line, sizeof line, f)) {
+        char verb[16] = "", a[64] = "", rest[128] = "";
+        unsigned n1 = 0, n2 = 0;
+        if (sscanf(line, "%15s", verb) != 1 || verb[0] == '#') continue;
+        if (!_stricmp(verb, "wait") && sscanf(line, "%*s %u", &n1) == 1) {
+            add_step(STEP_WAIT, n1, 0, "");
+        } else if (!_stricmp(verb, "hold") && sscanf(line, "%*s %63s %u", a, &n1) == 2) {
+            add_step(STEP_HOLD, n1, button_mask(a), "");
+        } else if (!_stricmp(verb, "tap") && sscanf(line, "%*s %63s %u %u", a, &n1, &n2) >= 1) {
+            unsigned count = n1 ? n1 : 1, interval = n2 > 100 ? n2 : 500;
+            for (unsigned i = 0; i < count; i++) {
+                add_step(STEP_HOLD, 100, button_mask(a), "");
+                add_step(STEP_WAIT, interval - 100, 0, "");
+            }
+        } else if (!_stricmp(verb, "shot") && sscanf(line, "%*s %47s", a) == 1) {
+            add_step(STEP_SHOT, 0, 0, a);
+        } else if (!_stricmp(verb, "log") && sscanf(line, "%*s %127[^\r\n]", rest) == 1) {
+            add_step(STEP_LOG, 0, 0, rest);
+        } else if (!_stricmp(verb, "quit")) {
+            add_step(STEP_QUIT, 0, 0, "");
+        } else {
+            fprintf(stderr, "[script] cannot read line: %s", line);
+        }
+    }
+    fclose(f);
+    fprintf(stderr, "[script] %d steps from %s\n", g_nsteps, path);
+    return 0;
+}
+
+/* The game is asked to leave the way a player would, by closing its window:
+ * its own throw, catch and exit run. If it has not left soon after, say so. */
+static DWORD WINAPI quit_timeout(LPVOID unused) {
+    (void)unused;
+    Sleep(20000);
+    fprintf(stderr, "\n[script] the game is still running 20 s after its window was closed: in sub_%08X, last native call %s\n",
+            g_cur_func, g_cur_import);
+    recomp_trace_flush();
+    TerminateProcess(GetCurrentProcess(), 5);
+    return 0;
+}
+
+/* The buttons the script holds right now. */
+static uint32_t scripted_buttons(void) {
+    static DWORD last_poll, script_ms;
+    DWORD wall = GetTickCount();
+    if (last_poll) script_ms += wall - last_poll < 34 ? wall - last_poll : 34;
+    last_poll = wall;
+    while (g_step < g_nsteps) {
+        const step_t* s = &g_steps[g_step];
+        if (!g_step_entered) {
+            g_step_entered = 1;
+            g_step_started = script_ms;
+            g_step_started_wall = wall;
+            if (s->kind == STEP_SHOT && g_shots[0]) strcpy_s(g_shot_pending, sizeof g_shot_pending, s->text);
+            if (s->kind == STEP_LOG) fprintf(stderr, "[script] %s\n", s->text);
+            if (s->kind == STEP_QUIT) {
+                fprintf(stderr, "[script] quit at %lu ms, %ld frames presented\n", GetTickCount() - g_t0, g_presents);
+                if (g_window) PostMessageW(g_window, WM_CLOSE, 0, 0);
+                CloseHandle(CreateThread(NULL, 0, quit_timeout, NULL, 0, NULL));
+            }
+        }
+        int tap = s->kind == STEP_HOLD && s->ms <= LONGEST_TAP_MS;
+        DWORD elapsed = tap ? wall - g_step_started_wall : script_ms - g_step_started;
+        /* A picture is of a finished frame: hold the script until it is taken. */
+        if (s->kind == STEP_SHOT && g_shot_pending[0]) return 0;
+        if (elapsed < s->ms) return s->kind == STEP_HOLD ? s->buttons : 0;
+        g_step++;
+        g_step_entered = 0;
+    }
+    return 0;
+}
+
+/* Input_Poll, wrapped. The poll itself still runs, because the pointer
+ * position it records must be kept up: the menus move the pointer to the
+ * selected item themselves and take the item under it as the selection. */
+void fc_orig_004802C0(void);
+void fc_wrap_004802C0(void) {
+    fc_orig_004802C0();
+    if (g_step < g_nsteps) {
+        MEM8(FC_MOUSE_IN_USE) = 0;
+        MEM8(FC_MOUSE_MODE) = 0;
+        g_eax = scripted_buttons();
+        g_edx = 0;
+    }
+}
+
 /* ---- Direct3D 9 -------------------------------------------------------------
  * IDirect3D9::CreateDevice (slot 16) and the device's Reset (16) and Present
  * (17) are wrapped by patching the vtables d3d9.dll shares between every
@@ -324,33 +474,36 @@ static d3d_createdev_t g_real_createdev;
 static d3d_reset_t g_real_reset;
 static d3d_present_t g_real_present;
 static d3dx_save_t g_d3dx_save;
-static volatile LONG g_presents;      /* frames the game has presented */
-static char g_shots[MAX_PATH];
 static int g_shot_every = 300;
 
-static void save_shot(IDirect3DDevice9* dev, LONG frame) {
+static void save_shot(IDirect3DDevice9* dev, LONG frame, const char* name) {
     IDirect3DSurface9* back = NULL;
-    char path[MAX_PATH + 32];
+    char path[MAX_PATH + 80];
     if (!g_d3dx_save) {
         HMODULE m = LoadLibraryA("d3dx9_43.dll");
         g_d3dx_save = m ? (d3dx_save_t)(void*)GetProcAddress(m, "D3DXSaveSurfaceToFileA") : NULL;
         if (!g_d3dx_save) { fprintf(stderr, "[shots] no D3DXSaveSurfaceToFileA\n"); g_shots[0] = 0; return; }
     }
     if (FAILED(IDirect3DDevice9_GetBackBuffer(dev, 0, 0, D3DBACKBUFFER_TYPE_MONO, &back))) return;
-    _snprintf(path, sizeof path - 1, "%s\\frame_%06ld.png", g_shots, frame);
+    if (name) _snprintf(path, sizeof path - 1, "%s\\%s.png", g_shots, name);
+    else _snprintf(path, sizeof path - 1, "%s\\frame_%06ld.png", g_shots, frame);
+    path[sizeof path - 1] = 0;
     HRESULT hr = g_d3dx_save(path, 3 /* D3DXIFF_PNG */, back, NULL, NULL);
     IDirect3DSurface9_Release(back);
     fprintf(stderr, "[shots] frame %ld -> %s%s\n", frame, path, FAILED(hr) ? " FAILED" : "");
 }
 
-static DWORD g_t0;                    /* GetTickCount at start, for the log's timestamps */
 static HRESULT g_last_present_hr;
 
 static HRESULT WINAPI host_Present(void* dev, const RECT* src, const RECT* dst, HWND wnd, const void* dirty) {
     LONG n = InterlockedIncrement(&g_presents);
     if (n == 1) fprintf(stderr, "[d3d9] first Present\n");
     if (g_force_active) *(volatile uint8_t*)(uintptr_t)FC_GAME_ACTIVE = 1;
-    if (g_shots[0] && (n == 1 || n % g_shot_every == 0)) save_shot((IDirect3DDevice9*)dev, n);
+    if (g_shots[0] && (n == 1 || n % g_shot_every == 0)) save_shot((IDirect3DDevice9*)dev, n, NULL);
+    if (g_shots[0] && g_shot_pending[0]) {
+        save_shot((IDirect3DDevice9*)dev, n, g_shot_pending);
+        g_shot_pending[0] = 0;
+    }
     HRESULT hr = g_real_present(dev, src, dst, wnd, dirty);
     if (hr != g_last_present_hr) {       /* a lost device shows here first */
         fprintf(stderr, "[d3d9] Present %ld at %lu ms -> 0x%08lX\n", n, GetTickCount() - g_t0, (unsigned long)hr);
@@ -446,6 +599,40 @@ static int wrap_d3d9(void) {
     patch_slot(d3d, 16, (void*)host_CreateDevice, (void**)&g_real_createdev);
     ((ULONG (WINAPI*)(void*))(*(void***)d3d)[2])(d3d);            /* Release; the vtable stays */
     return 0;
+}
+
+/* ---- silence ---------------------------------------------------------------
+ * A test run must not be heard either, but it should still run the game's
+ * sound code: the music is streamed from a multimedia timer's thread, the one
+ * place the game runs lifted code on a second thread. --silent mutes this
+ * process's audio session, which is every stream it opens (DirectSound's, and
+ * DirectShow's for the movies), whatever volume the game sets.
+ *
+ * Windows remembers a session's mute by the exe's path, so a run that is not
+ * silent unmutes at start: a silent run that was stopped half way must not
+ * leave the game mute for the player. */
+static const GUID k_clsid_device_enumerator = { 0xBCDE0395, 0xE52F, 0x467C, { 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E } };
+static const GUID k_iid_device_enumerator = { 0xA95664D2, 0x9614, 0x4F35, { 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6 } };
+static const GUID k_iid_session_manager = { 0xBFA971F1, 0x4D5E, 0x40BB, { 0x93, 0x5E, 0x96, 0x70, 0x39, 0xBF, 0xBE, 0xE4 } };
+
+static int session_mute(BOOL mute) {
+    IMMDeviceEnumerator* devices = NULL;
+    IMMDevice* device = NULL;
+    IAudioSessionManager* sessions = NULL;
+    ISimpleAudioVolume* volume = NULL;
+    BOOL now = !mute;
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    if (SUCCEEDED(CoCreateInstance(&k_clsid_device_enumerator, NULL, CLSCTX_ALL, &k_iid_device_enumerator, (void**)&devices)) &&
+        SUCCEEDED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(devices, eRender, eConsole, &device)) &&
+        SUCCEEDED(IMMDevice_Activate(device, &k_iid_session_manager, CLSCTX_ALL, NULL, (void**)&sessions)) &&
+        SUCCEEDED(IAudioSessionManager_GetSimpleAudioVolume(sessions, NULL, FALSE, &volume)) &&
+        SUCCEEDED(ISimpleAudioVolume_SetMute(volume, mute, NULL)))
+        ISimpleAudioVolume_GetMute(volume, &now);
+    if (volume) ISimpleAudioVolume_Release(volume);
+    if (sessions) IAudioSessionManager_Release(sessions);
+    if (device) IMMDevice_Release(device);
+    if (devices) IMMDeviceEnumerator_Release(devices);
+    return now == mute;
 }
 
 static native32_shim_t g_shims[] = {
@@ -600,6 +787,7 @@ static int dir_exists(const char* p) {
 int main(int argc, char** argv) {
     const char* game = NULL;
     const char* savedir = NULL;
+    const char* script = NULL;
     const char* extra = "";             /* --gameargs "...": appended to the guest's command line */
     char exe_full[MAX_PATH], game_full[MAX_PATH];
     int run = 0;
@@ -612,10 +800,12 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[i], "--run")) run = 1;
         else if (!strcmp(argv[i], "--unattended")) g_unattended = 1;
         else if (!strcmp(argv[i], "--active")) g_force_active = 1;
+        else if (!strcmp(argv[i], "--silent")) g_silent = 1;
         else if (!strcmp(argv[i], "--game") && i + 1 < argc) game = argv[++i];
         else if (!strcmp(argv[i], "--savedir") && i + 1 < argc) savedir = argv[++i];
         else if (!strcmp(argv[i], "--shots") && i + 1 < argc) GetFullPathNameA(argv[++i], MAX_PATH, g_shots, NULL);
         else if (!strcmp(argv[i], "--shot-every") && i + 1 < argc) g_shot_every = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--script") && i + 1 < argc) script = argv[++i];
         else if (!strcmp(argv[i], "--gameargs") && i + 1 < argc) extra = argv[++i];
         else if (!strcmp(argv[i], "--watchdog") && i + 1 < argc) g_watchdog_s = strtoul(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--probe") && i + 1 < argc && g_nprobe < MAX_PROBES)
@@ -623,8 +813,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--native-trace")) native32_trace_native = 1;
         else if (!strcmp(argv[i], "--callbacks")) native32_trace_callbacks = 1;
         else {
-            printf("usage: trails [--run] [--game DIR] [--savedir DIR] [--unattended] [--active]\n"
-                   "              [--shots DIR] [--shot-every N] [--watchdog S] [--gameargs \"...\"]\n"
+            printf("usage: trails [--run] [--game DIR] [--savedir DIR] [--unattended] [--active] [--silent]\n"
+                   "              [--shots DIR] [--shot-every N] [--script FILE] [--watchdog S]\n"
+                   "              [--gameargs \"...\"]\n"
                    "              [--probe VA] [--native-trace] [--callbacks]\n");
             recomp_trace_help();
             return argv[i][1] == 'h' || argv[i][2] == 'h' ? 0 : 1;
@@ -676,9 +867,16 @@ int main(int argc, char** argv) {
         MultiByteToWideChar(CP_ACP, 0, full, -1, g_savedir, MAX_PATH);
     }
     if (g_shots[0]) CreateDirectoryA(g_shots, NULL);
+    if (script && load_script(script)) return 1;
     /* steam_api.dll, Galaxy.dll and xinput1_3.dll sit beside the game exe. */
     SetDllDirectoryA(game_full);
 
+    /* Muted for a silent run, and unmuted for any other (see session_mute). */
+    if (!session_mute(g_silent) && g_silent) {
+        fprintf(stderr, "--silent: this process's audio session could not be muted; not running\n");
+        return 1;
+    }
+    if (g_silent) fprintf(stderr, "[audio] this process's audio session is muted\n");
     native32_init();
     AddVectoredExceptionHandler(0, crash);
     /* The C runtime in the exe picks its string and math routines by CPUID.

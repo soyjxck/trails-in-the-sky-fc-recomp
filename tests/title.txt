@@ -1,0 +1,13 @@
+# The title menu and the difficulty dialog: a picture after each key press.
+# With saves present the title cursor starts on LOAD; UP moves it to START.
+wait 6000
+shot 0_title
+tap UP
+shot 1_start
+tap ENTER
+wait 1000
+shot 2_difficulty
+tap ESC
+wait 1000
+shot 3_back
+quit

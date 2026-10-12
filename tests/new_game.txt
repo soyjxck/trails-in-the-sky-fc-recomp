@@ -1,0 +1,17 @@
+# Start a new game on Normal and press confirm through the opening scenes.
+# With saves present the title cursor starts on LOAD; UP moves it to START.
+wait 6000
+tap UP
+tap ENTER
+wait 1500
+shot 1_difficulty
+tap ENTER
+wait 6000
+shot 2_opening
+tap ENTER 40 700
+shot 3_dialogue
+tap ENTER 60 700
+shot 4_later
+tap ENTER 60 700
+shot 5_end
+quit

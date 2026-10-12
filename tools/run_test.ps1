@@ -8,14 +8,25 @@
 # run\trails.log.
 #
 #   tools\run_test.ps1 -Seconds 60
-#   tools\run_test.ps1 -Seconds 120 -ShotEvery 60 -Extra '--calltrace run\calls.txt'
+#       let the game run that long on its title screen
+#   tools\run_test.ps1 -Play tests\new_game.txt
+#       play a script of button presses (host.c has the format); its own
+#       `quit` ends the run, -Seconds is then only the limit
+#   tools\run_test.ps1 -Play tests\new_game.txt -Sound -Movies
+#       with music, sound effects and the logo and opening movies switched on
+#       in the run's config.ini. Nothing is heard: an unattended run mutes
+#       its own audio session (--silent).
+#   tools\run_test.ps1 -Seconds 120 -Extra '--calltrace run\calls.txt'
 param(
     [int]$Seconds = 60,
-    [int]$ShotEvery = 120,
+    [string]$Play = '',
+    [int]$ShotEvery = 0,
+    [switch]$Sound,
+    [switch]$Movies,
     [switch]$Visible,
     [string]$Build = 'build',
     [string]$Extra = '',
-    [int]$Tail = 40
+    [int]$Tail = 25
 )
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
@@ -30,10 +41,21 @@ Remove-Item -LiteralPath $Saves, $Shots -Recurse -Force -ErrorAction SilentlyCon
 $base = Join-Path $Run 'saves_base'
 if (Test-Path -LiteralPath $base) { Copy-Item -LiteralPath $base -Destination $Saves -Recurse }
 else { New-Item -ItemType Directory -Force $Saves | Out-Null }
+# The base config has sound and the movies off; a run can ask for them.
+$ini = Join-Path $Saves 'FALCOM\ED6\config.ini'
+if (($Sound -or $Movies) -and (Test-Path -LiteralPath $ini)) {
+    $lines = Get-Content -LiteralPath $ini
+    if ($Sound) { $lines = $lines -replace '^(BgmOff|SeOff)=.*$', '$1=0' }
+    if ($Movies) { $lines = $lines -replace '^(LogoPlayOff|OpeningPlayOff)=.*$', '$1=0' }
+    Set-Content -LiteralPath $ini -Value $lines -Encoding ascii
+}
 
+if ($Play -and $Seconds -eq 60) { $Seconds = 600 }
+if (-not $ShotEvery) { $ShotEvery = if ($Play) { 1000000 } else { 300 } }
 $argv = @('--run', '--active', '--savedir', $Saves, '--shots', $Shots, '--shot-every', $ShotEvery,
           '--watchdog', $Seconds, '--game', (Join-Path $Root 'Trails in the Sky FC'))
-if (-not $Visible) { $argv += '--unattended' }
+if ($Play) { $argv += @('--script', (Resolve-Path -LiteralPath $Play).Path) }
+if (-not $Visible) { $argv += @('--unattended', '--silent') }
 if ($Extra) { $argv += ($Extra -split ' ') }
 
 # Native stderr through PowerShell 5.1 turns into error records, so the
@@ -43,9 +65,16 @@ $started = Get-Date
 cmd /c "`"$Exe`" $quoted > `"$Log`" 2>&1"
 $code = $LASTEXITCODE
 $took = [int]((Get-Date) - $started).TotalSeconds
-$meaning = switch ($code) { 0 { 'the game left by itself' } 2 { 'a function that was not lifted' }
-                            3 { 'fault' } 4 { 'watchdog: still running at the time limit' } default { '' } }
-"exit code $code ($meaning) after $took s; log $Log"
+$text = Get-Content -LiteralPath $Log -Raw
+$verdict = if ($text -match '=== fault') { 'FAULT' }
+           elseif ($text -match '\[not-lifted\]') { 'NOT LIFTED' }
+           elseif ($text -match 'nothing in the guest catches') { 'UNCAUGHT THROW' }
+           elseif ($text -match 'I(CALL|TAIL): unresolved') { 'UNRESOLVED CALL' }
+           elseif ($Play -and $text -match '\[script\] quit' -and $text -match '\[exit\] ExitProcess') { 'ok: the script played to its end and the game left' }
+           elseif ($Play) { 'the script did not finish' }
+           elseif ($code -eq 4) { 'ok: still running at the time limit' }
+           else { 'the game left early' }
+"$verdict (exit code $code after $took s); log $Log"
 $shots = @(Get-ChildItem -LiteralPath $Shots -Filter *.png -ErrorAction SilentlyContinue)
 "$($shots.Count) frame(s) saved in $Shots"
 Get-Content -LiteralPath $Log -Tail $Tail
