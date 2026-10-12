@@ -190,7 +190,7 @@ static bool sticks_pressed(void) {
     typedef DWORD (WINAPI* get_state_t)(DWORD, state_t*);
     static get_state_t get_state;
     static bool tried;
-    static int wait;
+    static DWORD again;                 /* when to ask a pad that was not there again */
     if (!tried) {
         static const char* const names[] = { "xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll" };
         tried = true;
@@ -199,10 +199,11 @@ static bool sticks_pressed(void) {
             if (m) get_state = (get_state_t)(void*)GetProcAddress(m, "XInputGetState");
         }
     }
-    if (!get_state || wait-- > 0) return false;
+    if (!get_state || (again && (LONG)(GetTickCount() - again) < 0)) return false;
     state_t s;
     memset(&s, 0, sizeof s);
-    if (get_state(0, &s) != ERROR_SUCCESS) { wait = 240; return false; }
+    if (get_state(0, &s) != ERROR_SUCCESS) { again = GetTickCount() + 3000; if (!again) again = 1; return false; }
+    again = 0;
     return (s.pad.buttons & 0x00C0) == 0x00C0;      /* XINPUT_GAMEPAD_LEFT_THUMB | RIGHT_THUMB */
 }
 

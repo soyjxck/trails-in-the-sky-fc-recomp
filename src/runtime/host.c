@@ -856,10 +856,12 @@ static void frame_times_write(void) {
     if (!f) { fprintf(stderr, "[frames] cannot write %s\n", g_frame_times); return; }
     double per_ms = (double)(g_ft_tsc - g_ft_tsc0) / (g_ft_at - g_ft[0].at_ms);     /* the cycle counter's rate */
     fprintf(f, "# presented at (ms), frame (ms), main thread ran (ms)\n");
-    for (LONG i = 0, m = 0; i < g_ft_n; i++) {
+    LONG m = 0;
+    for (LONG i = 0; i < g_ft_n; i++) {
         while (m < g_ft_marks && g_ft_mark[m].frame <= i) fprintf(f, "# mark: %s\n", g_ft_mark[m++].text);
         fprintf(f, "%.3f %.4f %.4f\n", g_ft[i].at_ms, g_ft[i].ms, g_ft[i].cycles / per_ms);
     }
+    while (m < g_ft_marks) fprintf(f, "# mark: %s\n", g_ft_mark[m++].text);     /* a mark after the last frame */
     fclose(f);
     fprintf(stderr, "[frames] %ld frames' times in %s\n", g_ft_n, g_frame_times);
     g_frame_times[0] = 0;
