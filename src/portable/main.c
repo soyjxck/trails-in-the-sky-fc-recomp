@@ -24,7 +24,8 @@
  *     --d3d-log          list render targets, viewports and what is read back
  *
  * On the Switch there is no command line: the same options are read from
- * /switch/trails/args.txt if it is there.
+ * args.txt beside the program, if it is there, and what cannot work (started
+ * with too little memory, the game's files missing) is said on the screen.
  */
 #define _GNU_SOURCE
 #include <stdint.h>
@@ -42,19 +43,205 @@
  * that starts "done" (how a test run under an emulator knows it has ended). */
 #ifdef __SWITCH__
 #include <switch.h>
+#include <malloc.h>
+#include <pthread.h>
+#include <stdarg.h>
 #include <unistd.h>
-#define FC_DEFAULT_EXE "/switch/trails/game/ed6_win_DX9.exe"
-#define FC_SAVES_DIR   "/switch/trails/save"
-#define FC_LOG_FILE    "/switch/trails/trails.log"
-#define FC_ARGS_FILE   "/switch/trails/args.txt"
+/* Everything is in the folder the program was started from (as the Homebrew
+ * Menu names it; /switch/trails if it does not say): the game's own folder as
+ * "game", its Saved Games folder as "save", trails.log, and args.txt for the
+ * options a command line would carry. */
+static char g_home[300] = "/switch/trails";
+static char g_exe[400], g_saves[400], g_args[400];
+static volatile int g_log_open;
 static void log_done(int code) {
     static int said;
     if (said++) return;
     fprintf(stderr, "done: exit code %d\n", code);
     fflush(stderr);
+    g_log_open = 0;
     fclose(stderr);                     /* the card's file is only whole once closed */
 }
 static void log_done_at_exit(void) { log_done(0); }
+/* What the card has of the log is what has been flushed to it. Once a second,
+ * so that a run that stops dead still leaves its last words. */
+static void* log_keeper(void* arg) {
+    (void)arg;
+    for (;;) {
+        svcSleepThread(1000000000ull);
+        if (g_log_open) fsync(fileno(stderr));
+    }
+    return NULL;
+}
+
+/* Something the player has to put right: said on the screen, and in the log. */
+static void stop_with(const char* fmt, ...) {
+    char msg[1000];
+    PadState pad;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "cannot start:\n%s\n", msg);
+    consoleInit(NULL);
+    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+    padInitializeDefault(&pad);
+    printf("\n\n  Trails in the Sky FC\n\n%s\n\n  Press + to leave.\n", msg);
+    while (appletMainLoop()) {
+        padUpdate(&pad);
+        if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
+        consoleUpdate(NULL);
+    }
+    consoleExit(NULL);
+    log_done(1);
+    exit(1);
+}
+
+/* The settings a first run starts with: sound and the movies off, which this
+ * host cannot play yet (the game would stop where it first tried). Written
+ * only when there is no settings file. */
+static const char k_first_settings[] =
+    "[Video]\r\n"
+    "AdapterDX9=0\r\n"
+    "DeviceDX9=0\r\n"
+    "ModeDX9=25\r\n"
+    "WidthDX9=1280\r\n"
+    "HeightDX9=720\r\n"
+    "RefreshRateDX9=0\r\n"
+    "FormatDX9=22\r\n"
+    "VendorIDDX9=4318\r\n"
+    "DeviceIDDX9=9860\r\n"
+    "KeepAspect=1\r\n"
+    "HardwareVertexShaderDX9=1\r\n"
+    "WindowMode=1\r\n"
+    "UseMipmap=1\r\n"
+    "WaitVSync=0\r\n"
+    "LowTexture=0\r\n"
+    "TextureFilter=3\r\n"
+    "FpsMode=0\r\n"
+    "FullAntiAlias=0\r\n"
+    "LowEffect=0\r\n"
+    "ShadowQuality=2\r\n"
+    "HighResoText=1\r\n"
+    "ForceTextReso=0\r\n"
+    "HighResoAssets=1\r\n"
+    "BoostFont=0\r\n"
+    "MinimapMode=2\r\n"
+    "StatusMode=1\r\n"
+    "Menu=0\r\n"
+    "LogoPlayOff=1\r\n"
+    "OpeningPlayOff=1\r\n"
+    "UseNewOrbmentLine=1\r\n"
+    "UseNewOrbmentLineStyle=1\r\n"
+    "[Sound]\r\n"
+    "BgmOff=1\r\n"
+    "SeOff=1\r\n"
+    "BgmVolume=6\r\n"
+    "SeVolume=6\r\n"
+    "NotUseDirectSound=0\r\n"
+    "NotUseDirectSound3d=0\r\n"
+    "BtVoiceOff=0\r\n"
+    "BtVoiceLang=1\r\n"
+    "SoftwareSoundBuffer=0\r\n"
+    "NoBeeping=0\r\n"
+    "BgmPack=1\r\n"
+    "[Control]\r\n"
+    "Camera45Deg=0\r\n"
+    "UseGamaPad=1\r\n"
+    "KeyboardUseDI=1\r\n"
+    "MouseUseDI=1\r\n"
+    "DefaultRun=0\r\n"
+    "ChrTrans=1\r\n"
+    "Analog=1\r\n"
+    "RightCamera=1\r\n"
+    "InvertCamera=0\r\n"
+    "ButtonMode=1\r\n"
+    "Keyboard=20111b41585a2628252742434d10564e12\r\n"
+    "GamePad=000108050403020907060a0b\r\n"
+    "PadDeviceNo=0\r\n"
+    "PadSensitivity=60\r\n"
+    "Mouse=0102\r\n"
+    "UseWheel=1\r\n"
+    "WheelReverse=0\r\n"
+    "RetryOffset=0\r\n"
+    "TurboLvField=2\r\n"
+    "TurboLvBattle=6\r\n";
+static void first_settings(void) {
+    char path[480];
+    FILE* f;
+    snprintf(path, sizeof path, "%s/FALCOM", g_saves);
+    mkdir(g_saves, 0777), mkdir(path, 0777);
+    snprintf(path, sizeof path, "%s/FALCOM/ED6", g_saves);
+    mkdir(path, 0777);
+    snprintf(path, sizeof path, "%s/FALCOM/ED6/config.ini", g_saves);
+    if ((f = fopen(path, "rb")) != NULL) { fclose(f); return; }
+    if ((f = fopen(path, "wb")) == NULL) { fprintf(stderr, "could not write %s\n", path); return; }
+    fwrite(k_first_settings, 1, sizeof k_first_settings - 1, f);
+    fclose(f);
+    fprintf(stderr, "no settings yet: wrote %s\n", path);
+}
+
+static void switch_start(int argc, char** argv) {
+    char path[480];
+    struct stat st;
+    pthread_t keeper;
+    u64 total = 0, used = 0;
+    const char* self = argc > 0 && argv && argv[0] ? argv[0] : "";
+    const char* at = strchr(self, ':');
+    const char* cut;
+    at = at ? at + 1 : self;                                  /* past "sdmc:" */
+    cut = strrchr(at, '/');
+    if (at[0] == '/' && cut && cut > at && (size_t)(cut - at) < sizeof g_home) {
+        char home[sizeof g_home];
+        memcpy(home, at, (size_t)(cut - at));
+        home[cut - at] = 0;
+        snprintf(path, sizeof path, "sdmc:%s", home);
+        if (stat(path, &st) == 0) strcpy(g_home, home);
+    }
+    /* The SD card is the default device from here on, so a path that starts
+     * with a slash is on it. */
+    snprintf(path, sizeof path, "sdmc:%s", g_home);
+    mkdir(path, 0777);
+    if (chdir(path) != 0) chdir("sdmc:/");
+    if (freopen("trails.log", "w", stderr) || freopen("sdmc:/trails.log", "w", stderr)) {
+        g_log_open = 1;
+        setvbuf(stderr, NULL, _IONBF, 0);
+        pthread_create(&keeper, NULL, log_keeper, NULL);
+    }
+    svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
+    svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
+    fprintf(stderr, "started as \"%s\", home %s, applet type %d, memory %u MB of which %u MB in use\n", self, g_home,
+            (int)appletGetAppletType(), (unsigned)(total >> 20), (unsigned)(used >> 20));
+    snprintf(g_exe, sizeof g_exe, "%s/game/ed6_win_DX9.exe", g_home);
+    snprintf(g_saves, sizeof g_saves, "%s/save", g_home);
+    snprintf(g_args, sizeof g_args, "%s/args.txt", g_home);
+
+    if (appletGetAppletType() != AppletType_Application && appletGetAppletType() != AppletType_SystemApplication)
+        stop_with("  The Homebrew Menu was opened from the Album, and a program started\n"
+                  "  from there is given too little memory for this game.\n\n"
+                  "  Open the Homebrew Menu from a game instead: hold R while you start\n"
+                  "  any game, and keep it held until the menu appears.");
+    {
+        void* guest = memalign(0x10000, 0x20000000u);         /* what the guest's memory will ask for */
+        if (!guest)
+            stop_with("  There is not enough memory: the game needs 512 MB in one piece and\n"
+                      "  about 1 GB in all, and this program was given %u MB.\n\n"
+                      "  Open the Homebrew Menu by holding R while you start a game, not\n"
+                      "  from the Album.", (unsigned)(total >> 20));
+        free(guest);
+    }
+    if (stat(g_exe, &st) != 0)
+        stop_with("  The game's files are not on the SD card.\n\n"
+                  "  Copy what is inside the game's folder on your PC (the folder that\n"
+                  "  holds ed6_win_DX9.exe and the ED6_DT files) into\n\n"
+                  "      sdmc:%s/game\n\n"
+                  "  so that this file is there:\n\n"
+                  "      sdmc:%s", g_home, g_exe);
+    first_settings();
+    /* The game's folder is the working directory, as the game expects. */
+    snprintf(path, sizeof path, "sdmc:%s/game", g_home);
+    if (chdir(path) != 0) stop_with("  Could not enter sdmc:%s/game.", g_home);
+}
 #endif
 
 extern const uint32_t fc_entry_va;    /* recomp_dispatch.c */
@@ -237,11 +424,7 @@ int main(int argc, char** argv) {
 #ifdef __SWITCH__
     static char text[2048];
     static char* words[64];
-    /* The SD card is the default device from here on, so a path that starts
-     * with a slash is on it; the game's folder is the working directory, as
-     * the game expects of its own. */
-    if (chdir("sdmc:/switch/trails/game") != 0) return 1;
-    if (!freopen(FC_LOG_FILE, "w", stderr)) return 1;
+    switch_start(argc, argv);
     /* The console gives a core's time by turns only to threads of priority
      * 59, which is where the C library starts every thread but this one. The
      * main thread starts above them, and wherever the game polls for another
@@ -249,10 +432,10 @@ int main(int argc, char** argv) {
     svcSetThreadPriority(CUR_THREAD_HANDLE, 0x3B);
     hle_on_exit = log_done;
     atexit(log_done_at_exit);
-    saves = FC_SAVES_DIR;
+    saves = g_saves;
     hle_d3d9_vsync = 1;
     {
-        FILE* f = fopen(FC_ARGS_FILE, "r");
+        FILE* f = fopen(g_args, "r");
         size_t n = f ? fread(text, 1, sizeof text - 1, f) : 0;
         if (f) fclose(f);
         text[n] = 0;
@@ -273,7 +456,7 @@ int main(int argc, char** argv) {
         else exe = argv[i];
     }
 #ifdef __SWITCH__
-    if (!exe) exe = FC_DEFAULT_EXE;
+    if (!exe) exe = g_exe;
 #endif
     if (g_shots) mkdir(g_shots, 0755);
     hle_d3d9_title = "Trails in the Sky FC";
@@ -282,7 +465,9 @@ int main(int argc, char** argv) {
         pthread_t t;
         pthread_create(&t, NULL, watch_thread, NULL);
     }
+#ifndef __SWITCH__
     setvbuf(stderr, NULL, _IONBF, 0);
+#endif
     catch_faults();
     if (!exe) {
         fprintf(stderr, "usage: trails-portable [--imports] [--saves DIR] [--headless] [--frames N]\n"
