@@ -959,8 +959,11 @@ minute, in frames of up to 15 seconds with the main thread idle; two more on
 a quiet machine, one of them with `--slow-calls`, were clean, so that was
 the machine and not the limit, and the lesson is to keep the machine still
 while timing. And the 3840 by 2160 line for Direct3D 9 has its frames a
-second pulled down by one three-second frame that is one of the test's own
-pictures, not left out by the rule above.
+second pulled down by one frame of three seconds, nineteen frames before one
+of the test's pictures, in which the main thread ran for 0.4 s and waited
+for the rest. It is not a picture (those are left out, and it is not at one's
+place in the file), the Vulkan and Direct3D 12 runs at that resolution do not
+have it, and it is not explained.
 
 Vertical sync in a window is section 21's: 32 frames a second before, 120
 after.
