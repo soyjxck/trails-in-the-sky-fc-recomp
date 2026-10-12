@@ -615,18 +615,27 @@ goes through:
   (`src/portable/movie.c`, on ffmpeg): each frame is scaled to at most 1280
   by 720, handed to the Direct3D layer as a picture (`hle_d3d9_show_picture`:
   drawn into the back buffer and presented like a frame of the game's), and
-  the sound goes to the mixer as it is read. A button ends it. The game is
-  never told a movie started.
+  the sound goes to the mixer as it is read. A button ends it.
 - **The clock is the wall's.** The first version took the time from what the
   mixer had played, and stopped dead in the logo: that file's picture starts
   0.7 s after its sound, and the sound that would have moved the clock was
   only read once the wait for the picture was over.
-- **The game's own wait.** The logo and the opening are played by one function
-  (0x00488050) that fades out, calls `MoviePlay`, and then loops until the
-  movie ends or a button is pressed. Nothing will tell it the movie ended. It
-  is wrapped too, and while the game is inside it after the host has played
-  the movie, `Input_Poll` answers with the confirm button: the game leaves the
-  loop the way it does when a player skips.
+- **The game is told the movie is over, in its own way.** A byte (0x0079AA3E)
+  is the game's movie state: 0 none, 1 playing, 2 over. Everything that waits
+  for a movie waits for the 2: the loop of the function that plays the logo
+  (0x00488050: until the movie is over or a button is pressed), and a scene's
+  script, which starts the movie with one command, asks "is it over" with
+  another and stops it with a third. `MoviePlay` itself leaves a 2 for a movie
+  that is switched off in the settings, so that is what the wrap leaves when
+  the host has played one.
+
+  The first version left the state alone and wrapped the logo's function as
+  well, answering its loop with the confirm button. That did for the logo.
+  The opening is not played by that function: a script plays it, after the
+  first scenes of a new game. Before the fix a new game played to that point
+  showed the whole opening and then a black screen until a button was
+  pressed; with the state set, the next scene starts by itself (the same play
+  script on both builds, the buttons left alone for 15 s after the movie).
 - **The picture is drawn, not copied.** The first version filled a texture
   with the frame and copied it into the back buffer with `glBlitFramebuffer`.
   Linux showed it; under Ryujinx the screen stayed black for the whole movie
@@ -641,5 +650,7 @@ without them skips the movies and says so.
 
 Not known yet: whether the console itself decodes 1080p fast enough (three
 decoder threads, frames that are late by more than an eighth of a second
-dropped; an emulator on a desktop processor says nothing about that);
-movies played from scripts later in the game have not been reached.
+dropped; an emulator on a desktop processor says nothing about that). The
+stock game's opening (XviD, 200 s) has been played through on Linux, 11,995
+frames and none dropped; movies later in the game than that have not been
+reached.

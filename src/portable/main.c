@@ -446,13 +446,8 @@ static uint64_t pad_buttons(void) {
     if (y > 16000) b |= B_DOWN;
     return b;
 }
-static int g_movie_wait;                /* 1: in the game's wait for a movie; 2: and the host has played it */
 void fc_wrap_004802C0(void) {
     fc_orig_004802C0();
-    if (g_movie_wait == 2) {            /* the movie is over: the button that ends the wait */
-        g_eax |= (uint32_t)B_CONFIRM;
-        return;
-    }
     if (g_step < g_nsteps) {
         MEM8(FC_MOUSE_IN_USE) = 0;
         MEM8(FC_MOUSE_MODE) = 0;
@@ -471,9 +466,14 @@ void fc_wrap_004802C0(void) {
 void fc_wrap_004C11A0(void) { fc_orig_004C11A0(); }
 
 /* MoviePlay (0x004886D0; the file's name, as the game's folder holds it, in
- * ecx): the host plays the whole movie here (movie.c) and returns as if
- * nothing had been asked. The game never enters the state in which it waits
- * for DirectShow, which is not here, to finish. A button ends the movie. */
+ * ecx): the host plays the whole movie here (movie.c), and a button ends it.
+ * It returns with the game's movie state saying "over", which is what the
+ * game's own MoviePlay leaves for a movie that is switched off in the
+ * settings: 0 is none, 1 playing (drawn and advanced each frame, on
+ * DirectShow, which is not here), 2 over. Everything that waits for a movie
+ * waits for that 2: the logo's and the opening's own loop (0x00488050), and
+ * a scene's script, which asks for it and then stops the movie itself. */
+#define FC_MOVIE_STATE 0x0079AA3Eu    /* byte */
 int fc_movie_play(const char* path, int (*skip)(void));
 static int movie_skip(void) {
     static uint64_t before = ~0ull;
@@ -487,19 +487,8 @@ void fc_wrap_004886D0(void) {
     for (char* c = name; *c; c++) if (*c == '\\') *c = '/';
     movie_skip();
     fc_movie_play(name, movie_skip);
-    if (g_movie_wait) g_movie_wait = 2;
+    MEM8(FC_MOVIE_STATE) = 2;
     g_esp += 4;                                      /* the return address: MoviePlay takes nothing from the stack */
-}
-/* The logo and the opening (0x00488050): the game fades out, calls MoviePlay
- * and then waits, drawing the movie each frame, until it ends or a button is
- * pressed. By the time MoviePlay returns here the movie has been played, and
- * nothing will ever tell the game it ended: the wait is ended the other way,
- * with the button, held for as long as the game is still in this function. */
-void fc_orig_00488050(void);
-void fc_wrap_00488050(void) {
-    g_movie_wait = 1;
-    fc_orig_00488050();
-    g_movie_wait = 0;
 }
 /* ReadDirFiles (0x00477580) and ArchiveReadRaw (0x00477180) are wrapped by the
  * mod loader, src/mods/vfs.c, the same file as on Windows. */
