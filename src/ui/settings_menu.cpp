@@ -407,7 +407,7 @@ int fc_menu_frame(void* device) {
                     if (!strcmp(k_renderers[i].word, g_renderer_next)) rat = rcount;
                     rmap[rcount] = i, rnames[rcount++] = k_renderers[i].name;
                 }
-                if (choose("Renderer", rnames, rcount, &rat, "What draws the game: Windows' Direct3D 9, Vulkan (DXVK) or Direct3D 12.")) {
+                if (choose("Renderer", rnames, rcount, &rat, "What draws the game: Windows' Direct3D 9, Vulkan (DXVK) or Direct3D 12. Direct3D 12 works in full screen only, for now.")) {
                     snprintf(g_renderer_next, sizeof g_renderer_next, "%s", k_renderers[rmap[rat]].word);
                     wchar_t word[16];
                     swprintf(word, 16, L"%hs", g_renderer_next);
@@ -433,6 +433,11 @@ int fc_menu_frame(void* device) {
                     fprintf(stderr, "[menu] frame rate = %d\n", k_fps[fat].value);
                 }
                 ImGui::EndTable();
+            }
+            if (!strcmp(g_renderer_next, "d3d12") && G8(FC_WINDOW_MODE)) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.72f, 0.35f, 1.0f));
+                ImGui::TextWrapped("Direct3D 12 shows nothing in a window yet: with this display setting the game will use Direct3D 9.");
+                ImGui::PopStyleColor();
             }
             ImGui::EndTabItem();
         }

@@ -884,5 +884,18 @@ Checked: the borderless window's place, size and style from outside
 rates above in unattended runs; the menu's new rows in its pictures. A
 borderless window drawn by Direct3D 9 on 12 cannot be photographed this way
 (the desktop's capture calls see what is under it), so that one is the
-player's to look at. Not tried yet: Alt+Tab out of full screen and back,
-and the mouse row with a real mouse.
+player's to look at.
+
+The player looked: music, and no picture. **Direct3D 9 on 12 draws nothing
+into a window here.** Not into the borderless one (which then shows whatever
+was behind it) and not into an ordinary one (a black client area, seen in a
+grab of the screen); the game runs and its back buffer is right, and in full
+screen the same renderer is fine. It had only ever been run unattended,
+where the pictures are the back buffer's and nobody sees the window (11).
+The cause is not known. Until it is, a window is Direct3D 9's: asked for
+Direct3D 12 with `WindowMode=1`, the host says so in the log and uses
+Direct3D 9, and the menu says so under its Display page. On Direct3D 9 the
+player confirmed the borderless window at 3840 by 2160.
+
+Not tried yet: Alt+Tab out of full screen and back, and the mouse row with a
+real mouse.

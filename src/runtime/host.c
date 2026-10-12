@@ -1328,6 +1328,14 @@ static void recomp_settings(void) {
     }
     g_borderless = GetPrivateProfileIntW(L"Recomp", L"Borderless", 0, path) != 0;
     g_mouse_off = GetPrivateProfileIntW(L"Recomp", L"Mouse", 1, path) == 0;
+    /* Direct3D 9 on 12 draws nothing into a window here: the game runs, its back buffer is right, and the
+     * window stays black (a borderless one shows what was behind it). In full screen it is fine. Until that
+     * is understood, a window is Direct3D 9's. An unattended run, whose window nobody sees, keeps what it
+     * was asked for: its pictures are the back buffer's. */
+    if (g_renderer == RENDERER_D3D12 && !g_unattended && GetPrivateProfileIntW(L"Video", L"WindowMode", 1, path) != 0) {
+        fprintf(stderr, "[renderer] Direct3D 12 shows nothing in a window (full screen only, for now): Direct3D 9 instead\n");
+        g_renderer = RENDERER_D3D9;
+    }
     if (g_borderless) fprintf(stderr, "[settings] a borderless window\n");
     if (g_mouse_off) fprintf(stderr, "[settings] the mouse is off\n");
 }
