@@ -591,9 +591,8 @@ are found in the recording where the log says they were played (correlation
 The portable host also has the Windows host's play scripts now (`--script`),
 which is what made that run possible.
 
-Not done: the Windows host's three functions are empty (it has the scripts
-but not the voices); SoraVoice's own settings file (volume, which sounds a
-voice mutes) is not read.
+The Windows host got the same voices later (18). Not done: SoraVoice's own
+settings file (volume, which sounds a voice mutes) is not read.
 
 ## 17. Movies
 
@@ -654,3 +653,61 @@ dropped; an emulator on a desktop processor says nothing about that). The
 stock game's opening (XviD, 200 s) has been played through on Linux, 11,995
 frames and none dropped; movies later in the game than that have not been
 reached.
+
+## 18. The stock game and a modded one, on every host
+
+Every host has to play the game as Steam installs it and a copy with mods
+in it. Pointed at a modded folder (`--game`), the Windows host showed what
+that takes: three things were wrong, none of them visible in the stock game.
+
+**It was running on a mod's DLLs without knowing.** The folder held DXVK as
+`d3d9.dll` and SoraVoice's loader as `dinput8.dll`. The host puts the game's
+folder in the DLL search path, because the game loads `steam_api.dll`,
+`Galaxy.dll` and `xinput1_3.dll` from there by name; so `d3d9.dll` by name
+was the mod's too, and the log's "Direct3D 9" was Vulkan. The loader came
+along the same way and did nothing (its `ed_voice.dll` is looked for beside
+the exe that is running), which is the kind of nothing that turns into a
+fault the day a file moves. Both are made for the original exe. Now, where
+the game's folder has a file with the name of a DLL the game imports from,
+Windows' own is loaded first, by its full path, and the log says which were
+passed over. The exe's own imports are told to come from the system folder
+too (`/DEPENDENTLOADFLAG:0x800`), for the day it is run from inside such a
+folder.
+
+**It had no voices.** The voices (16) were written against the portable
+host's mixer, and the Windows host's three functions were empty. The player
+is now one file for every host, `src/mods/voice.c`, and each host gives it
+two things in a small file of its own, an Ogg Vorbis file as samples and
+samples played:
+
+| | reads with | plays through |
+|---|---|---|
+| Windows (`src/runtime/voice_out.c`) | the game's own `dll\vorbisfile.dll`, called directly | a DirectSound buffer of the host's own |
+| Linux, the Switch (`src/portable/voice_out.c`) | win32hle's reader (libvorbis) | a clip in win32hle's mixer |
+
+The game's libvorbisfile is an old one: it calls the `close` callback
+without looking whether there is one, and the first voiced line was a jump
+to address 0 on the decoding thread until it was given one that does
+nothing.
+
+**It did not read the mod's scripts.** `mods_scan_game` was only called by
+the portable host. It is called by both now.
+
+What the hosts take from a modded folder is then the same everywhere:
+replaced archives, `BGM` and its packs (`BgmPack` in the settings; the game
+falls back to `BGM` for a pack that is not there), the movie files, and
+SoraVoice's `voice\scena` and `voice\ogg`.
+
+The check is the same play scripts on each host and each folder, unattended
+and muted (`tools\run_test.ps1 -Game`, `GAME=` for `tools/run_portable.sh`),
+the modded folder being the Evolution set (art, music, movies, SoraVoice,
+Japanese battle voices):
+
+| | stock | modded |
+|---|---|---|
+| Windows: title, new game | pass | pass; 84 voiced lines, each read and started |
+| Linux: title, new game | pass; logo 269 frames, none dropped | pass; logo (H.264, 1080p) 1,569 frames, none dropped; 82 voiced lines |
+| Switch, under Ryujinx: to the title | logo shown, title at 60 frames a second | logo shown (1,549 frames, 20 dropped), title |
+
+Not heard yet: the voices on Windows (the run is muted; the log shows each
+line's file, length and that DirectSound took it).

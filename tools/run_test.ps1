@@ -16,6 +16,9 @@
 #       with music, sound effects and the logo and opening movies switched on
 #       in the run's config.ini. Nothing is heard: an unattended run mutes
 #       its own audio session (--silent).
+#   tools\run_test.ps1 -Play tests\new_game.txt -Game D:\games\modded -Extra '--voice-log'
+#       another game folder than the checkout's "Trails in the Sky FC": a
+#       modded copy, say. The port has to play both.
 #   tools\run_test.ps1 -Seconds 120 -Extra '--calltrace run\calls.txt'
 param(
     [int]$Seconds = 60,
@@ -25,6 +28,7 @@ param(
     [switch]$Movies,
     [switch]$Visible,
     [string]$Build = 'build',
+    [string]$Game = '',
     [string]$Extra = '',
     [int]$Tail = 25
 )
@@ -53,7 +57,7 @@ if (($Sound -or $Movies) -and (Test-Path -LiteralPath $ini)) {
 if ($Play -and $Seconds -eq 60) { $Seconds = 600 }
 if (-not $ShotEvery) { $ShotEvery = if ($Play) { 1000000 } else { 300 } }
 $argv = @('--run', '--active', '--savedir', $Saves, '--shots', $Shots, '--shot-every', $ShotEvery,
-          '--watchdog', $Seconds, '--game', (Join-Path $Root 'Trails in the Sky FC'))
+          '--watchdog', $Seconds, '--game', $(if ($Game) { $Game } else { Join-Path $Root 'Trails in the Sky FC' }))
 if ($Play) { $argv += @('--script', (Resolve-Path -LiteralPath $Play).Path) }
 if (-not $Visible) { $argv += @('--unattended', '--silent') }
 if ($Extra) { $argv += ($Extra -split ' ') }

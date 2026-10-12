@@ -52,6 +52,7 @@ static char g_shots[MAX_PATH];        /* --shots: where frames are saved */
 static HWND g_window;                 /* the game's top-level window */
 static HANDLE g_guest_thread;         /* the thread the game's main function runs on */
 static void pace_report(void);
+static void frame_times_mark(const char* text);
 static uint64_t thread_cycles(HANDLE thread);
 static uint64_t g_pace_cycles0, g_pace_tsc0;
 
@@ -193,11 +194,9 @@ static int g_count_top = 60;      /* --count-natives N: how many of them to list
 void fc_orig_004886D0(void);
 void fc_wrap_004886D0(void) { fc_orig_004886D0(); }
 
-/* Voices (PATCHES in run_lift.py): the portable host plays them
- * (src/portable/voice.c); this one does not yet. */
-void fc_voice_tag(uint32_t at) { (void)at; }
-int fc_voice_playing(void) { return 0; }
-void fc_voice_page(void) {}
+/* Voices (PATCHES in run_lift.py) are src/mods/voice.c's, on both hosts. What
+ * it needs of this one is in voice_out.c, which asks for the game's window. */
+HWND fc_host_window(void) { return g_window; }
 
 static void shim_ExitProcess(void) {
     fprintf(stderr, "\n[exit] ExitProcess(%u) from sub_%08X\n", ARG(0), g_cur_func);
@@ -450,7 +449,7 @@ static uint32_t scripted_buttons(void) {
             g_step_started = script_ms;
             g_step_started_wall = wall;
             if (s->kind == STEP_SHOT && g_shots[0]) strcpy_s(g_shot_pending, sizeof g_shot_pending, s->text);
-            if (s->kind == STEP_LOG) fprintf(stderr, "[script] %s\n", s->text);
+            if (s->kind == STEP_LOG) fprintf(stderr, "[script] %s\n", s->text), frame_times_mark(s->text);
             if (s->kind == STEP_QUIT) {
                 fprintf(stderr, "[script] quit at %lu ms, %ld frames presented\n", GetTickCount() - g_t0, g_presents);
                 if (g_window) PostMessageW(g_window, WM_CLOSE, 0, 0);
@@ -800,12 +799,65 @@ static LARGE_INTEGER g_pace_last, g_pace_first;
 static double g_pace_sum_ms, g_pace_worst_ms;
 static LONG g_pace_n, g_pace_late;
 
+/* --frame-times FILE: every frame, for a closer look than that summary. A
+ * line is when the frame was presented (ms after the first), how long after
+ * the one before (ms), and how much of that the main thread was running (ms,
+ * by its cycle count). A play script's `log` lines are in it too, each
+ * before the first frame after it, as `# mark: <text>`: what part of a run a
+ * stretch of frames belongs to. Kept in memory and written as the game leaves. */
+static char g_frame_times[MAX_PATH];
+static struct { LONG frame; char text[64]; } g_ft_mark[64];
+static int g_ft_marks;
+typedef struct { double at_ms; float ms; uint32_t cycles; } frame_time;
+static frame_time* g_ft;
+static LONG g_ft_n, g_ft_room;
+static uint64_t g_ft_cycles, g_ft_tsc0, g_ft_tsc;
+static double g_ft_at;
+
+static void frame_times_note(double ms) {
+    if (!g_frame_times[0]) return;
+    if (g_ft_n == g_ft_room) {
+        frame_time* more = realloc(g_ft, (size_t)(g_ft_room = g_ft_room ? g_ft_room * 2 : 1 << 16) * sizeof *g_ft);
+        if (!more) { g_frame_times[0] = 0; return; }
+        g_ft = more;
+    }
+    uint64_t cycles = thread_cycles(g_guest_thread), ran = g_ft_n ? cycles - g_ft_cycles : 0;
+    g_ft_tsc = __rdtsc();
+    if (!g_ft_n) g_ft_tsc0 = g_ft_tsc;
+    g_ft_at += ms;
+    g_ft[g_ft_n].at_ms = g_ft_at, g_ft[g_ft_n].ms = (float)ms;
+    g_ft[g_ft_n].cycles = ran > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)ran;
+    g_ft_cycles = cycles;
+    g_ft_n++;
+}
+static void frame_times_mark(const char* text) {
+    if (!g_frame_times[0] || g_ft_marks >= 64) return;
+    g_ft_mark[g_ft_marks].frame = g_ft_n;
+    strncpy(g_ft_mark[g_ft_marks].text, text, sizeof g_ft_mark[0].text - 1);
+    g_ft_marks++;
+}
+static void frame_times_write(void) {
+    if (!g_frame_times[0] || g_ft_n < 3) return;
+    FILE* f = fopen(g_frame_times, "w");
+    if (!f) { fprintf(stderr, "[frames] cannot write %s\n", g_frame_times); return; }
+    double per_ms = (double)(g_ft_tsc - g_ft_tsc0) / (g_ft_at - g_ft[0].at_ms);     /* the cycle counter's rate */
+    fprintf(f, "# presented at (ms), frame (ms), main thread ran (ms)\n");
+    for (LONG i = 0, m = 0; i < g_ft_n; i++) {
+        while (m < g_ft_marks && g_ft_mark[m].frame <= i) fprintf(f, "# mark: %s\n", g_ft_mark[m++].text);
+        fprintf(f, "%.3f %.4f %.4f\n", g_ft[i].at_ms, g_ft[i].ms, g_ft[i].cycles / per_ms);
+    }
+    fclose(f);
+    fprintf(stderr, "[frames] %ld frames' times in %s\n", g_ft_n, g_frame_times);
+    g_frame_times[0] = 0;
+}
+
 static void pace_note(void) {
     LARGE_INTEGER now, f;
     QueryPerformanceCounter(&now);
     QueryPerformanceFrequency(&f);
     if (g_pace_last.QuadPart) {
         double ms = (double)(now.QuadPart - g_pace_last.QuadPart) * 1000.0 / (double)f.QuadPart;
+        frame_times_note(ms);
         static LONG warm_up;          /* the first frames load things: not what pacing is about */
         if (warm_up < 120) {
             if (++warm_up == 120) g_pace_cycles0 = thread_cycles(g_guest_thread), g_pace_tsc0 = __rdtsc();
@@ -834,6 +886,7 @@ static uint64_t thread_cycles(HANDLE thread) {
 static uint64_t g_pace_cycles0, g_pace_tsc0;
 
 static void pace_report(void) {
+    frame_times_write();
     if (g_pace_n < 2) return;
     double share = (double)(thread_cycles(g_guest_thread) - g_pace_cycles0) / (double)(__rdtsc() - g_pace_tsc0);
     fprintf(stderr, "[frames] %ld frames, %.1f a second (%.2f ms each); %ld took half as long again or more, the longest %.1f ms\n",
@@ -1249,6 +1302,27 @@ static DWORD WINAPI guest_main(LPVOID unused) {
     return g_eax;
 }
 
+/* A mod of the original game often comes as a DLL with a system DLL's name,
+ * put in the game's folder to be loaded in its place: SoraVoice's dinput8.dll,
+ * DXVK as d3d9.dll. They are made for the original exe. The port has the
+ * voices itself (src/mods/voice.c) and picks its own renderer (--renderer), so
+ * the DLLs the game imports from are Windows' own: where the game's folder
+ * has a file of the same name, the system's is loaded here by its full path,
+ * before anything asks for it by name alone. */
+static void system_dlls_first(const char* game_full) {
+    static const char* const names[] = { "d3d9.dll", "dinput8.dll", "dsound.dll", "winmm.dll", "version.dll",
+                                         "dbghelp.dll", "xinput9_1_0.dll", "d3dx9_43.dll", "d3dxof.dll" };
+    char sys[MAX_PATH], path[MAX_PATH + 32];
+    if (!GetSystemDirectoryA(sys, MAX_PATH)) return;
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        _snprintf(path, sizeof path - 1, "%s\\%s", game_full, names[i]);
+        path[sizeof path - 1] = 0;
+        if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) continue;
+        _snprintf(path, sizeof path - 1, "%s\\%s", sys, names[i]);
+        if (LoadLibraryA(path)) fprintf(stderr, "[mods] %s in the game's folder is left alone: Windows' own is used\n", names[i]);
+    }
+}
+
 static int dir_exists(const char* p) {
     DWORD a = GetFileAttributesA(p);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
@@ -1262,7 +1336,7 @@ int main(int argc, char** argv) {
     const char* mods = NULL;
     const char* extra = "";             /* --gameargs "...": appended to the guest's command line */
     char exe_full[MAX_PATH], game_full[MAX_PATH];
-    int run = 0;
+    int run = 0, voice_log = 0;
     /* Unbuffered: the log is the evidence, and ExitProcess flushes nothing
      * with the C runtime linked in (/MT). */
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -1286,6 +1360,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--shot-every") && i + 1 < argc) g_shot_every = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) script = argv[++i];
         else if (!strcmp(argv[i], "--mods") && i + 1 < argc) mods = argv[++i];
+        else if (!strcmp(argv[i], "--voice-log")) voice_log = 1;
+        else if (!strcmp(argv[i], "--frame-times") && i + 1 < argc) GetFullPathNameA(argv[++i], MAX_PATH, g_frame_times, NULL);
         else if (!strcmp(argv[i], "--profile") && i + 1 < argc) {
             static char full[MAX_PATH];      /* before the working directory changes */
             GetFullPathNameA(argv[++i], MAX_PATH, full, NULL);
@@ -1305,10 +1381,10 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--callbacks")) native32_trace_callbacks = 1;
         else {
             printf("usage: trails [--run] [--game DIR] [--savedir DIR] [--unattended] [--active] [--silent]\n"
-                   "              [--renderer d3d9|vulkan|d3d12] [--mods DIR]\n"
+                   "              [--renderer d3d9|vulkan|d3d12] [--mods DIR] [--voice-log]\n"
                    "              [--fps N (0 = no limit; default 125, the game's own)] [--original-limiter]\n"
                    "              [--shots DIR] [--shot-every N] [--script FILE] [--watchdog S]\n"
-                   "              [--profile FILE] [--gameargs \"...\"]\n"
+                   "              [--profile FILE] [--frame-times FILE] [--gameargs \"...\"]\n"
                    "              [--probe VA] [--native-trace] [--callbacks] [--count-natives [N]] [--d3dx-dump DIR]\n"
                    "              [--slow-calls MS]\n");
             recomp_trace_help();
@@ -1362,6 +1438,7 @@ int main(int argc, char** argv) {
     }
     if (g_shots[0]) CreateDirectoryA(g_shots, NULL);
     if (script && load_script(script)) return 1;
+    mods_scan_game(game_full);          /* SoraVoice's scripts, where that mod puts them */
     {   /* The mods folder: --mods, or "mods" beside the exe, or beside the build folder in a checkout. */
         char dir[MAX_PATH], exe[MAX_PATH];
         GetModuleFileNameA(NULL, exe, MAX_PATH);
@@ -1377,6 +1454,7 @@ int main(int argc, char** argv) {
         if (dir_exists(dir)) mods_scan(dir);
     }
     /* steam_api.dll, Galaxy.dll and xinput1_3.dll sit beside the game exe. */
+    system_dlls_first(game_full);
     SetDllDirectoryA(game_full);
 
     /* Muted for a silent run, and unmuted for any other (see session_mute). */
@@ -1419,6 +1497,7 @@ int main(int argc, char** argv) {
     }
     /* The archives (ED6_DT*.dat) are opened relative to the game folder. */
     if (!SetCurrentDirectoryA(game_full)) { fprintf(stderr, "cannot enter %s\n", game_full); return 1; }
+    fc_voice_init(voice_log);
     g_t0 = GetTickCount();
     if (g_watchdog_s) CloseHandle(CreateThread(NULL, 0, watchdog, NULL, 0, NULL));
     CloseHandle(CreateThread(NULL, 0, desktop_watch, NULL, 0, NULL));

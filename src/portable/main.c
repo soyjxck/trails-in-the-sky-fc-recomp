@@ -269,7 +269,6 @@ static void switch_start(int argc, char** argv) {
 
 extern const uint32_t fc_entry_va;    /* recomp_dispatch.c */
 extern const win32hle_shim fc_win32_wide[];   /* win32_wide.c */
-void fc_voice_init(int log);                  /* voice.c */
 void fc_set_saves_folder(const char* host_dir);
 
 /* ---- what the lift calls into (HOOKS and WRAPS in run_lift.py) -------------

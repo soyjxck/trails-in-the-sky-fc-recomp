@@ -31,7 +31,9 @@ endif()
 add_executable(trails
   src/runtime/host.c
   src/runtime/profile.c
+  src/runtime/voice_out.c
   src/mods/vfs.c
+  src/mods/voice.c
   ${PCRECOMP}/runtime/native32/native32.c
   ${PCRECOMP}/runtime/recomp32/image_loader.c
   ${PCRECOMP}/runtime/recomp32/recomp_trace.c
@@ -56,9 +58,13 @@ if(MSVC_VERSION GREATER_EQUAL 1950)
   string(APPEND GEN_OPT ";/d2SSAOptimizer-")
 endif()
 set_source_files_properties(${GEN_SOURCES} PROPERTIES COMPILE_OPTIONS "/w;${GEN_OPT}")
-set_source_files_properties(src/runtime/host.c src/runtime/profile.c src/mods/vfs.c
+set_source_files_properties(src/runtime/host.c src/runtime/profile.c src/runtime/voice_out.c
+                            src/mods/vfs.c src/mods/voice.c
                             PROPERTIES COMPILE_OPTIONS "/W3")
-target_link_libraries(trails PRIVATE user32 gdi32 kernel32 winmm ole32 dbghelp psapi)
+target_link_libraries(trails PRIVATE user32 gdi32 kernel32 winmm ole32 dbghelp psapi dsound)
+# The exe's own imports are system DLLs and come from the system folder, also
+# when it is run from a folder that holds a mod's dinput8.dll or winmm.dll.
+target_link_options(trails PRIVATE /DEPENDENTLOADFLAG:0x800)
 
 option(FC_TRACE "record a ring buffer of lifted function entries" OFF)
 if(FC_TRACE)
