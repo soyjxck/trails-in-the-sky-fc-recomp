@@ -73,6 +73,15 @@ if [ "$TARGET" = switch ]; then
   "$DEVKITPRO/tools/bin/nacptool" --create "Trails in the Sky FC" "recomp" "0.1.0" "$OUT/trails.nacp"
   "$DEVKITPRO/tools/bin/elf2nro" "$EXE" "$OUT/trails.nro" --nacp="$OUT/trails.nacp" --icon="$DEVKITPRO/libnx/default_icon.jpg"
   ls -la "$OUT/trails.nro"
+  # The check program: started the same way, it says what the game needs of
+  # the console and the card, and whether it is there.
+  # shellcheck disable=SC2086
+  $CC $ARCH -D__SWITCH__ -O1 -Wall -I$DEVKITPRO/libnx/include -I$DEVKITPRO/portlibs/switch/include "$ROOT/tools/switch_check.c" \
+    -specs=$DEVKITPRO/libnx/switch.specs -L$DEVKITPRO/libnx/lib -L$DEVKITPRO/portlibs/switch/lib \
+    -lEGL -lGLESv2 -lglapi -ldrm_nouveau -lstdc++ -lnx -lm -o "$OUT/trails-check.elf"
+  "$DEVKITPRO/tools/bin/nacptool" --create "Trails in the Sky FC: check" "recomp" "0.1.0" "$OUT/trails-check.nacp"
+  "$DEVKITPRO/tools/bin/elf2nro" "$OUT/trails-check.elf" "$OUT/trails-check.nro" --nacp="$OUT/trails-check.nacp" --icon="$DEVKITPRO/libnx/default_icon.jpg"
+  ls -la "$OUT/trails-check.nro"
 else
   ls -la "$EXE"
 fi
