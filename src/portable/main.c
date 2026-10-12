@@ -282,15 +282,16 @@ void fc_orig_00477180(void);
 /* ---- a play script (--script FILE) ---------------------------------------------------
  * The Windows host's, line for line (src/runtime/host.c has the format):
  * wait MS, hold BUTTON MS, tap BUTTON [times [interval]], shot NAME, log TEXT,
- * quit. While a script has steps left it answers Input_Poll instead of the
- * controller. */
+ * quit; and one of this host's own, touch X Y [MS], a finger on the picture
+ * at that point of it for that long (200 ms). While a script has steps left
+ * it answers Input_Poll instead of the controller. */
 static const struct { const char* name; uint32_t bit; } k_buttons[] = {
     { "UP", 0x1 }, { "DOWN", 0x2 }, { "RIGHT", 0x4 }, { "LEFT", 0x8 }, { "ESC", 0x10 }, { "SPACE", 0x20 },
     { "ENTER", 0x40 }, { "CTRL", 0x80 }, { "NUM0", 0x100 }, { "SHIFT", 0x200 }, { "Z", 0x400 }, { "X", 0x800 },
     { "PGUP", 0x1000 }, { "PGDN", 0x2000 }, { "B", 0x8000 }, { "C", 0x10000 }, { "M", 0x20000 },
     { "A", 0x400000 }, { "V", 0x800000 },
 };
-enum { STEP_WAIT, STEP_HOLD, STEP_SHOT, STEP_LOG, STEP_QUIT };
+enum { STEP_WAIT, STEP_HOLD, STEP_SHOT, STEP_LOG, STEP_QUIT, STEP_TOUCH };
 typedef struct { int kind; uint32_t ms, buttons; char text[128]; } step_t;
 #define LONGEST_TAP_MS 250u
 static step_t* g_steps;
@@ -316,7 +317,7 @@ static void load_script(const char* path) {
     if (!f) { fprintf(stderr, "[script] cannot open %s\n", path); return; }
     while (fgets(line, sizeof line, f)) {
         char verb[16] = "", a[64] = "", rest[128] = "";
-        unsigned n1 = 0, n2 = 0;
+        unsigned n1 = 0, n2 = 0, n3 = 0;
         if (sscanf(line, "%15s", verb) != 1 || verb[0] == '#') continue;
         if (!strcasecmp(verb, "wait") && sscanf(line, "%*s %u", &n1) == 1) add_step(STEP_WAIT, n1, 0, "");
         else if (!strcasecmp(verb, "hold") && sscanf(line, "%*s %63s %u", a, &n1) == 2) add_step(STEP_HOLD, n1, button_mask(a), "");
@@ -326,6 +327,8 @@ static void load_script(const char* path) {
                 add_step(STEP_HOLD, 100, button_mask(a), "");
                 add_step(STEP_WAIT, interval - 100, 0, "");
             }
+        } else if (!strcasecmp(verb, "touch") && sscanf(line, "%*s %u %u %u", &n1, &n2, &n3) >= 2) {
+            add_step(STEP_TOUCH, n3 ? n3 : 200, (n1 & 0xFFFFu) | (n2 & 0xFFFFu) << 16, "");
         } else if (!strcasecmp(verb, "shot") && sscanf(line, "%*s %47s", a) == 1) add_step(STEP_SHOT, 0, 0, a);
         else if (!strcasecmp(verb, "log") && sscanf(line, "%*s %127[^\r\n]", rest) == 1) add_step(STEP_LOG, 0, 0, rest);
         else if (!strcasecmp(verb, "quit")) add_step(STEP_QUIT, 0, 0, "");
@@ -348,6 +351,7 @@ static uint32_t scripted_buttons(void) {
             g_step_started = script_ms;
             g_step_started_wall = wall;
             if (s->kind == STEP_SHOT) snprintf(g_shot_pending, sizeof g_shot_pending, "%s", s->text);
+            if (s->kind == STEP_TOUCH) hle_d3d9_touch(1, (int)(s->buttons & 0xFFFFu), (int)(s->buttons >> 16));
             if (s->kind == STEP_LOG) fprintf(stderr, "[script] %s\n", s->text);
             if (s->kind == STEP_QUIT) {
                 fprintf(stderr, "[script] quit\n");
@@ -359,6 +363,7 @@ static uint32_t scripted_buttons(void) {
         uint32_t elapsed = tap ? wall - g_step_started_wall : script_ms - g_step_started;
         if (s->kind == STEP_SHOT && g_shot_pending[0]) return 0;     /* a picture is of a finished frame */
         if (elapsed < s->ms) return s->kind == STEP_HOLD ? s->buttons : 0;
+        if (s->kind == STEP_TOUCH) hle_d3d9_touch(0, (int)(s->buttons & 0xFFFFu), (int)(s->buttons >> 16));
         g_step++;
         g_step_entered = 0;
     }
@@ -445,22 +450,27 @@ static uint64_t pad_buttons(void) {
     if (y > 16000) b |= B_DOWN;
     return b;
 }
+/* The pointer. The game is driven by buttons or by a pointer, which it
+ * draws itself and whose place picks the menu item. It goes over to the
+ * pointer whenever the pointer has moved (0x00480FB0) and back at a direction
+ * button. But it also glides the pointer to the selected item itself, and
+ * here, where that was the only thing that ever moved it, the game took its
+ * own gliding for a hand on a mouse: a pointer on the screen of a console
+ * that has no mouse. So the game is with the pointer only while a real one
+ * is in use, from a mouse's or a finger's report (win32hle counts them; a
+ * touch screen is a mouse there) until the next button. */
+static int g_pointer_live;
+
 void fc_wrap_004802C0(void) {
+    static unsigned seen;
     fc_orig_004802C0();
-    if (g_step < g_nsteps) {
-        MEM8(FC_MOUSE_IN_USE) = 0;
-        MEM8(FC_MOUSE_MODE) = 0;
-        g_eax = scripted_buttons();
-        g_edx = 0;
-        return;
-    }
-    uint64_t held = pad_buttons();
-    if (held) {
-        MEM8(FC_MOUSE_IN_USE) = 0;        /* the menus follow the buttons, not a pointer that is not moving */
-        MEM8(FC_MOUSE_MODE) = 0;
-        g_eax |= (uint32_t)held;
-        g_edx |= (uint32_t)(held >> 32);
-    }
+    unsigned reports = hle_input_pointer_events();
+    if (reports != seen) seen = reports, g_pointer_live = 1;
+    uint64_t held = g_step < g_nsteps ? scripted_buttons() : pad_buttons();
+    if (held) g_pointer_live = 0;
+    if (!g_pointer_live) MEM8(FC_MOUSE_IN_USE) = 0, MEM8(FC_MOUSE_MODE) = 0;
+    g_eax |= (uint32_t)held;      /* beside what the poll found itself, which here is only the pointer's buttons */
+    g_edx |= (uint32_t)(held >> 32);
 }
 void fc_wrap_004C11A0(void) { fc_orig_004C11A0(); }
 

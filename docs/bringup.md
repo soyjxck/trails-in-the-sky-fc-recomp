@@ -784,3 +784,43 @@ and `Fps=60` starts on Vulkan at 59.4 frames a second, and `--renderer d3d12
 
 Not checked yet: the menu worked by hand (F2, the keyboard, a pad, the
 mouse), which needs the window to be the active one.
+
+## 20. The pointer off Windows, and a finger for a mouse
+
+The game has two ways of being driven. By buttons; and by a pointer, which
+it draws itself, whose place picks the menu item, and whose click chooses it.
+`Input_Poll` goes over to the pointer when the pointer has moved since the
+last poll (0x00480FB0 compares `GetCursorPos` with the place it remembers)
+and back to the buttons at a direction button. Two bytes hold which
+(0x00557E5E, 0x006B0018), and everything that draws or follows the pointer
+looks at the second.
+
+The game also glides the pointer to the selected item itself, with
+`SetCursorPos`. On Windows that goes unnoticed, because the place it
+remembers is the place it set. On the portable host nothing but that gliding
+ever moved the pointer, and the game took it for a hand on a mouse: a
+pointer on the title screen of a console that has no mouse, and menus that
+followed it.
+
+So the host decides. The fork counts the reports of a real pointer
+(`hle_input_pointer_events`; `SetCursorPos` is not one), and the wrap of
+`Input_Poll` keeps the game with the buttons, both bytes cleared after every
+poll, except from such a report until the next button.
+
+A real pointer is a mouse over the window, which the Direct3D layer's window
+now passes on (it passed on nothing but its close button), at the point of
+the back buffer the present has put under it. And it is a touch screen,
+which SDL reports as a mouse. One thing is different about a finger: it does
+not hover. It lands and presses in one event, and the menus take what the
+pointer is over a frame before they take the click. A touch therefore moves
+the pointer at once, presses two frames later and lets go no sooner than two
+after that (`hle_d3d9_touch`).
+
+Play scripts have a verb for it on this host, `touch X Y [MS]`, and the
+check is one script on Linux without a window (the pictures are the back
+buffer): the title screen with no pointer; a touch on OPTION, and the option
+screen is open with the pointer where the finger was; ESC, the screen
+closed and the pointer gone; a touch on LOAD, and the list of saves, the one
+under the pointer lit.
+
+Not tried yet: a real finger on a real console, and a real mouse.
