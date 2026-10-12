@@ -70,7 +70,10 @@ HOOKS = {0x004FD597}
 #               (--script) answers instead of the keyboard.
 #   0x004C11A0  Clock_Update: the frame limiter is in it, as a loop that
 #               spins on Sleep(0). The host waits properly first.
-WRAPS = {0x004802C0, 0x004C11A0}
+#   0x00477580  ReadDirFiles and
+#   0x00477180  ArchiveReadRaw: mods' loose files stand in for archive
+#               entries (src/mods/vfs.c).
+WRAPS = {0x004802C0, 0x004C11A0, 0x00477580, 0x00477180}
 
 # Fixes to the game itself: C run after the instruction at the address.
 # The lift stays faithful; a patch is for a fix the original cannot have.

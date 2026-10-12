@@ -296,3 +296,54 @@ talks to the device it is handed.
 
 Both played the title menu and the three-minute save, field and battle
 script to the end, with the picture as under Direct3D 9.
+
+## 12. Mods as loose files
+
+A mod for this game has always replaced a whole `ED6_DTnn.dat` and `.dir`
+pair, so two mods for one archive could not both be installed, or it came
+with a loader injected into the game (LB-ARK as `d3dxof.dll`, SoraVoice as
+`dinput8.dll`), which patch the game's machine code in memory. Here that code
+is not what runs, so neither loader can work, and neither is needed: the
+loader is part of the port (`src/mods/vfs.c`).
+
+`ReadDirFiles` (0x00477580) and `ArchiveReadRaw` (0x00477180) are wrapped.
+After the tables are loaded, each entry a mod replaces is given its
+replacement's size and, for an offset, 0x80000000 plus a number; every read
+of an entry goes through `ArchiveReadRaw` with that entry's own offset and
+size, so a replacement is known by its offset and filled from the mod's file.
+A mod is a folder under `mods`:
+
+| | |
+|---|---|
+| `mods\<mod>\ED6_DT05\h_kao000._ch` | a plain file |
+| `mods\<mod>\data\ED6_DT05\...` | the same, laid out as LB-ARK mods are |
+| `mods\<mod>\packed\ED6_DT05\...` | an entry exactly as an archive holds it |
+| `mods\<mod>\voice\scena\T0310   ._SN` | a script, laid out as SoraVoice's are |
+
+The game unpacks most entries after reading them. A `packed` file is still
+packed; a plain one is handed over as a stream of stored runs, which the
+game's own unpacker copies through, so no compressor is needed.
+
+`tools/archive_diff.py` turns a whole-archive mod into such a folder: it
+compares the mod's archive with the clean game's entry by entry and writes
+out only what differs. The four Evolution art archives come to 620 entries:
+
+```
+ED6_DT00: 8 entries changed, 0 new (of 102)       status images
+ED6_DT04: 21 entries changed, 0 new (of 177)      event visuals
+ED6_DT05: 583 entries changed, 0 new (of 2001)    portraits
+ED6_DT0F: 8 entries changed, 0 new (of 38)        battle faces
+```
+
+With those and SoraVoice's 491 scripts as a second mod, a new game plays
+its opening with the Evolution portraits in the message windows:
+
+```
+[mods] 10-evolution-art: 620 files
+[mods] 20-voice-scripts: 491 files
+[mods] 1111 files from 2 mods stand in for archive entries
+```
+
+Not done yet: files a mod adds that the archive has no entry for, the voices
+themselves (the scripts only carry the tags), and music and movies, which the
+game opens by path and not through its archives.

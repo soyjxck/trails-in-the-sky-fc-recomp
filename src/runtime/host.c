@@ -32,6 +32,7 @@
 #include "native32.h"
 #include "recomp_trace.h"
 #include "profile.h"
+#include "mods.h"
 
 extern const uint32_t fc_entry_va;    /* recomp_dispatch.c */
 
@@ -1100,6 +1101,7 @@ int main(int argc, char** argv) {
     const char* savedir = NULL;
     const char* script = NULL;
     const char* profile = NULL;
+    const char* mods = NULL;
     const char* extra = "";             /* --gameargs "...": appended to the guest's command line */
     char exe_full[MAX_PATH], game_full[MAX_PATH];
     int run = 0;
@@ -1125,6 +1127,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--shots") && i + 1 < argc) GetFullPathNameA(argv[++i], MAX_PATH, g_shots, NULL);
         else if (!strcmp(argv[i], "--shot-every") && i + 1 < argc) g_shot_every = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) script = argv[++i];
+        else if (!strcmp(argv[i], "--mods") && i + 1 < argc) mods = argv[++i];
         else if (!strcmp(argv[i], "--profile") && i + 1 < argc) {
             static char full[MAX_PATH];      /* before the working directory changes */
             GetFullPathNameA(argv[++i], MAX_PATH, full, NULL);
@@ -1140,7 +1143,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--callbacks")) native32_trace_callbacks = 1;
         else {
             printf("usage: trails [--run] [--game DIR] [--savedir DIR] [--unattended] [--active] [--silent]\n"
-                   "              [--renderer d3d9|vulkan|d3d12]\n"
+                   "              [--renderer d3d9|vulkan|d3d12] [--mods DIR]\n"
                    "              [--fps N (0 = no limit; default 125, the game's own)] [--original-limiter]\n"
                    "              [--shots DIR] [--shot-every N] [--script FILE] [--watchdog S]\n"
                    "              [--profile FILE] [--gameargs \"...\"]\n"
@@ -1197,6 +1200,20 @@ int main(int argc, char** argv) {
     }
     if (g_shots[0]) CreateDirectoryA(g_shots, NULL);
     if (script && load_script(script)) return 1;
+    {   /* The mods folder: --mods, or "mods" beside the exe, or beside the build folder in a checkout. */
+        char dir[MAX_PATH], exe[MAX_PATH];
+        GetModuleFileNameA(NULL, exe, MAX_PATH);
+        char* cut = strrchr(exe, '\\');
+        if (cut) *cut = 0;
+        if (mods) {
+            GetFullPathNameA(mods, MAX_PATH, dir, NULL);
+        } else {
+            _snprintf(dir, sizeof dir - 1, "%s\\mods", exe);
+            dir[sizeof dir - 1] = 0;
+            if (!dir_exists(dir)) _snprintf(dir, sizeof dir - 1, "%s\\..\\mods", exe);
+        }
+        if (dir_exists(dir)) mods_scan(dir);
+    }
     /* steam_api.dll, Galaxy.dll and xinput1_3.dll sit beside the game exe. */
     SetDllDirectoryA(game_full);
 

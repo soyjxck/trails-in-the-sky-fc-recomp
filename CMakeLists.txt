@@ -31,13 +31,14 @@ endif()
 add_executable(trails
   src/runtime/host.c
   src/runtime/profile.c
+  src/mods/vfs.c
   ${PCRECOMP}/runtime/native32/native32.c
   ${PCRECOMP}/runtime/recomp32/image_loader.c
   ${PCRECOMP}/runtime/recomp32/recomp_trace.c
   ${GEN_SOURCES}
 )
 target_include_directories(trails PRIVATE
-  src/runtime ${GEN_DIR} ${PCRECOMP}/runtime/native32 ${PCRECOMP}/runtime/recomp32)
+  src/runtime src/mods ${GEN_DIR} ${PCRECOMP}/runtime/native32 ${PCRECOMP}/runtime/recomp32)
 # RECOMP_RETADDR=0u: a stack imbalance during bring-up leaks a harmless 0, not
 # 0xDEAD0000 into a size argument.
 target_compile_definitions(trails PRIVATE RECOMP_RETADDR=0u _CRT_SECURE_NO_WARNINGS
@@ -55,7 +56,8 @@ if(MSVC_VERSION GREATER_EQUAL 1950)
   string(APPEND GEN_OPT ";/d2SSAOptimizer-")
 endif()
 set_source_files_properties(${GEN_SOURCES} PROPERTIES COMPILE_OPTIONS "/w;${GEN_OPT}")
-set_source_files_properties(src/runtime/host.c src/runtime/profile.c PROPERTIES COMPILE_OPTIONS "/W3")
+set_source_files_properties(src/runtime/host.c src/runtime/profile.c src/mods/vfs.c
+                            PROPERTIES COMPILE_OPTIONS "/W3")
 target_link_libraries(trails PRIVATE user32 gdi32 kernel32 winmm ole32 dbghelp psapi)
 
 option(FC_TRACE "record a ring buffer of lifted function entries" OFF)
