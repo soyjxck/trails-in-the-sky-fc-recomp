@@ -594,3 +594,46 @@ which is what made that run possible.
 Not done: the Windows host's three functions are empty (it has the scripts
 but not the voices); SoraVoice's own settings file (volume, which sounds a
 voice mutes) is not read.
+
+## 17. Movies
+
+The logo movie plays on Linux; the Switch build has the same player and has
+not been watched yet.
+
+The game plays its movies through DirectShow's multimedia streaming
+(`CLSID_AMMultiMediaStream`): a filter graph decodes the file, the game copies
+each frame into a texture and draws it. With the movies switched on and no
+DirectShow, the game faded out and waited on a black screen for a movie that
+never started, until a button was pressed.
+
+Answering DirectShow would have meant being a filter graph for the game's own
+renderer. Instead the host plays the file itself, at the one door every movie
+goes through:
+
+- **`MoviePlay` (0x004886D0, the file's name in `ecx`) is wrapped.** On the
+  portable host the wrap plays the whole file before it returns
+  (`src/portable/movie.c`, on ffmpeg): each frame is scaled to at most 1280
+  by 720, handed to the Direct3D layer as a picture (`hle_d3d9_show_picture`:
+  drawn into the back buffer and presented like a frame of the game's), and
+  the sound goes to the mixer as it is read. A button ends it. The game is
+  never told a movie started.
+- **The clock is the wall's.** The first version took the time from what the
+  mixer had played, and stopped dead in the logo: that file's picture starts
+  0.7 s after its sound, and the sound that would have moved the clock was
+  only read once the wait for the picture was over.
+- **The game's own wait.** The logo and the opening are played by one function
+  (0x00488050) that fades out, calls `MoviePlay`, and then loops until the
+  movie ends or a button is pressed. Nothing will tell it the movie ended. It
+  is wrapped too, and while the game is inside it after the host has played
+  the movie, `Input_Poll` answers with the confirm button: the game leaves the
+  loop the way it does when a player skips.
+
+The files: the plain game's logo is MPEG-1 with MP2 sound and its opening
+XviD at 1920 by 960 with PCM; the Evolution mod's are H.264 at 1080p. ffmpeg
+decodes all of them. On the Switch it is devkitPro's `switch-ffmpeg`;
+`tools/build_portable.sh` takes `FFMPEG_CFLAGS` and `FFMPEG_LIBS`, and a build
+without them skips the movies and says so.
+
+Not known yet: whether the console decodes 1080p fast enough (three decoder
+threads, frames that are late by more than an eighth of a second dropped);
+movies played from scripts later in the game have not been reached.

@@ -13,6 +13,10 @@
 # The Linux build takes the system's if pkg-config knows it, or the one named
 # by VORBIS_CFLAGS and VORBIS_LIBS; with neither, a built-in decoder is used
 # that cannot play most of the tracks.
+#
+# The movies are played with ffmpeg (src/portable/movie.c): FFMPEG_CFLAGS and
+# FFMPEG_LIBS say where it is; on Linux pkg-config is asked if they are not
+# given. Without it the movies are skipped. devkitPro's is switch-ffmpeg.
 set -eu
 TARGET=${1:-linux}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -38,6 +42,16 @@ linux)
   else
     echo "no libvorbis: most of the game's music will not play (see the top of this script)" >&2
   fi
+  if [ -z "${FFMPEG_LIBS:-}" ] && pkg-config --exists libavformat libavcodec libswscale libswresample libavutil 2>/dev/null; then
+    FFMPEG_CFLAGS=$(pkg-config --cflags libavformat libavcodec libswscale libswresample libavutil)
+    FFMPEG_LIBS=$(pkg-config --libs libavformat libavcodec libswscale libswresample libavutil)
+  fi
+  if [ -n "${FFMPEG_LIBS:-}" ]; then
+    CFLAGS="$CFLAGS -DFC_WITH_FFMPEG ${FFMPEG_CFLAGS:-}"
+    LIBS="$LIBS $FFMPEG_LIBS"
+  else
+    echo "no ffmpeg: the movies will be skipped (see the top of this script)" >&2
+  fi
   LIBS="$LIBS -lm"
   EXE=$OUT/trails-portable
   ;;
@@ -48,6 +62,16 @@ switch)
   PKG=$DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-pkg-config
   CFLAGS="$ARCH -D__SWITCH__ -DHLE_WITH_LIBVORBIS -ffunction-sections -I$DEVKITPRO/libnx/include -I$DEVKITPRO/portlibs/switch/include $($PKG --cflags sdl2 SDL2_ttf)"
   LIBS="-specs=$DEVKITPRO/libnx/switch.specs $ARCH -L$DEVKITPRO/libnx/lib $($PKG --libs --static sdl2 SDL2_ttf) -lEGL -lGLESv2 -lglapi -ldrm_nouveau -L$DEVKITPRO/portlibs/switch/lib -lvorbisfile -lvorbis -logg -lnx -lm"
+  if [ -z "${FFMPEG_LIBS:-}" ] && [ -f "$DEVKITPRO/portlibs/switch/lib/libavformat.a" ]; then
+    FFMPEG_CFLAGS="-I$DEVKITPRO/portlibs/switch/include"
+    FFMPEG_LIBS="-L$DEVKITPRO/portlibs/switch/lib -lavformat -lavcodec -lswscale -lswresample -lavutil -ldav1d -lbz2 -lz"
+  fi
+  if [ -n "${FFMPEG_LIBS:-}" ]; then
+    CFLAGS="$CFLAGS -DFC_WITH_FFMPEG ${FFMPEG_CFLAGS:-}"
+    LIBS=$(echo "$LIBS" | sed "s| -lnx -lm\$| $FFMPEG_LIBS -lnx -lm|")
+  else
+    echo "no ffmpeg: the movies will be skipped (see the top of this script)" >&2
+  fi
   EXE=$OUT/trails.elf
   ;;
 *) echo "unknown target $TARGET" >&2; exit 1 ;;

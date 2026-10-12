@@ -108,9 +108,8 @@ static void stop_with(const char* fmt, ...) {
     exit(1);
 }
 
-/* The settings a first run starts with: a 1280 by 720 picture, and the logo
- * and opening movies off, which this host cannot play yet. Written only when
- * there is no settings file. */
+/* The settings a first run starts with: a 1280 by 720 picture, sound and the
+ * movies on. Written only when there is no settings file. */
 static const char k_first_settings[] =
     "[Video]\r\n"
     "AdapterDX9=0\r\n"
@@ -140,8 +139,8 @@ static const char k_first_settings[] =
     "MinimapMode=2\r\n"
     "StatusMode=1\r\n"
     "Menu=0\r\n"
-    "LogoPlayOff=1\r\n"
-    "OpeningPlayOff=1\r\n"
+    "LogoPlayOff=0\r\n"
+    "OpeningPlayOff=0\r\n"
     "UseNewOrbmentLine=1\r\n"
     "UseNewOrbmentLineStyle=1\r\n"
     "[Sound]\r\n"
@@ -447,8 +446,13 @@ static uint64_t pad_buttons(void) {
     if (y > 16000) b |= B_DOWN;
     return b;
 }
+static int g_movie_wait;                /* 1: in the game's wait for a movie; 2: and the host has played it */
 void fc_wrap_004802C0(void) {
     fc_orig_004802C0();
+    if (g_movie_wait == 2) {            /* the movie is over: the button that ends the wait */
+        g_eax |= (uint32_t)B_CONFIRM;
+        return;
+    }
     if (g_step < g_nsteps) {
         MEM8(FC_MOUSE_IN_USE) = 0;
         MEM8(FC_MOUSE_MODE) = 0;
@@ -465,6 +469,38 @@ void fc_wrap_004802C0(void) {
     }
 }
 void fc_wrap_004C11A0(void) { fc_orig_004C11A0(); }
+
+/* MoviePlay (0x004886D0; the file's name, as the game's folder holds it, in
+ * ecx): the host plays the whole movie here (movie.c) and returns as if
+ * nothing had been asked. The game never enters the state in which it waits
+ * for DirectShow, which is not here, to finish. A button ends the movie. */
+int fc_movie_play(const char* path, int (*skip)(void));
+static int movie_skip(void) {
+    static uint64_t before = ~0ull;
+    uint64_t now = pad_buttons() & (B_CONFIRM | B_CANCEL | B_PAD7), pressed = now & ~before;
+    before = now;                                    /* a button still down from before the movie does not count */
+    return pressed != 0;
+}
+void fc_wrap_004886D0(void) {
+    char name[300];
+    snprintf(name, sizeof name, "%s", g_ecx ? (const char*)ADDR(g_ecx) : "");
+    for (char* c = name; *c; c++) if (*c == '\\') *c = '/';
+    movie_skip();
+    fc_movie_play(name, movie_skip);
+    if (g_movie_wait) g_movie_wait = 2;
+    g_esp += 4;                                      /* the return address: MoviePlay takes nothing from the stack */
+}
+/* The logo and the opening (0x00488050): the game fades out, calls MoviePlay
+ * and then waits, drawing the movie each frame, until it ends or a button is
+ * pressed. By the time MoviePlay returns here the movie has been played, and
+ * nothing will ever tell the game it ended: the wait is ended the other way,
+ * with the button, held for as long as the game is still in this function. */
+void fc_orig_00488050(void);
+void fc_wrap_00488050(void) {
+    g_movie_wait = 1;
+    fc_orig_00488050();
+    g_movie_wait = 0;
+}
 /* ReadDirFiles (0x00477580) and ArchiveReadRaw (0x00477180) are wrapped by the
  * mod loader, src/mods/vfs.c, the same file as on Windows. */
 
@@ -627,6 +663,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) load_script(argv[++i]);
         else if (!strcmp(argv[i], "--mods") && i + 1 < argc) mods = argv[++i];
         else if (!strcmp(argv[i], "--voice-log")) voice_log = 1;
+        else if (!strcmp(argv[i], "--movie-log")) { extern int fc_movie_log; fc_movie_log = 1; }
         else if (!strcmp(argv[i], "--trace") && i + 1 < argc) setenv("HLE_SHIMTRACE", argv[++i], 1);
         else exe = argv[i];
     }

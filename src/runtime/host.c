@@ -188,6 +188,13 @@ static void shim_TerminateProcess(void) {
 
 static int g_count_top = 60;      /* --count-natives N: how many of them to list */
 
+/* MoviePlay, wrapped for the portable host's sake: here it is the game's own,
+ * on DirectShow. */
+void fc_orig_004886D0(void);
+void fc_wrap_004886D0(void) { fc_orig_004886D0(); }
+void fc_orig_00488050(void);
+void fc_wrap_00488050(void) { fc_orig_00488050(); }
+
 /* Voices (PATCHES in run_lift.py): the portable host plays them
  * (src/portable/voice.c); this one does not yet. */
 void fc_voice_tag(uint32_t at) { (void)at; }

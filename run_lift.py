@@ -73,7 +73,12 @@ HOOKS = {0x004FD597}
 #   0x00477580  ReadDirFiles and
 #   0x00477180  ArchiveReadRaw: mods' loose files stand in for archive
 #               entries (src/mods/vfs.c).
-WRAPS = {0x004802C0, 0x004C11A0, 0x00477580, 0x00477180}
+#   0x004886D0  MoviePlay (the file's name in ecx): DirectShow on Windows;
+#               a host without it plays the file itself (src/portable/movie.c).
+#   0x00488050  the logo and the opening: fades out, calls MoviePlay, and
+#               waits, drawing the movie, for its end or a button. A host
+#               that has played the movie already ends that wait.
+WRAPS = {0x004802C0, 0x004C11A0, 0x00477580, 0x00477180, 0x004886D0, 0x00488050}
 
 # Additions to the game itself: C run after the instruction at the address.
 # The lift stays faithful; a patch is for what the original cannot have.
