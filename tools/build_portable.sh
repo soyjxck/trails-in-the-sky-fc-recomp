@@ -7,6 +7,12 @@
 # The lifted C (src/recomp/gen) is made on Windows by run_lift.py; it is the
 # same C on every host. Objects are kept, so a second run compiles only what
 # changed. JOBS sets the number of compilers (default: every core).
+#
+# The game's music is Ogg Vorbis from encoders old enough to need the real
+# libvorbis (floor 0). The Switch build takes devkitPro's (switch-libvorbis).
+# The Linux build takes the system's if pkg-config knows it, or the one named
+# by VORBIS_CFLAGS and VORBIS_LIBS; with neither, a built-in decoder is used
+# that cannot play most of the tracks.
 set -eu
 TARGET=${1:-linux}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -21,7 +27,18 @@ case "$TARGET" in
 linux)
   CC=${CC:-gcc}
   CFLAGS="$(pkg-config --cflags sdl2 SDL2_ttf)"
-  LIBS="-rdynamic $(pkg-config --libs sdl2 SDL2_ttf) -lGLESv2 -lEGL -lpthread -lm"
+  LIBS="-rdynamic $(pkg-config --libs sdl2 SDL2_ttf) -lGLESv2 -lEGL -lpthread"
+  if [ -z "${VORBIS_LIBS:-}" ] && pkg-config --exists vorbisfile 2>/dev/null; then
+    VORBIS_CFLAGS=$(pkg-config --cflags vorbisfile)
+    VORBIS_LIBS=$(pkg-config --libs vorbisfile)
+  fi
+  if [ -n "${VORBIS_LIBS:-}" ]; then
+    CFLAGS="$CFLAGS -DHLE_WITH_LIBVORBIS ${VORBIS_CFLAGS:-}"
+    LIBS="$LIBS $VORBIS_LIBS"
+  else
+    echo "no libvorbis: most of the game's music will not play (see the top of this script)" >&2
+  fi
+  LIBS="$LIBS -lm"
   EXE=$OUT/trails-portable
   ;;
 switch)
@@ -29,8 +46,8 @@ switch)
   CC=$DEVKITPRO/devkitA64/bin/aarch64-none-elf-gcc
   ARCH="-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE"
   PKG=$DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-pkg-config
-  CFLAGS="$ARCH -D__SWITCH__ -ffunction-sections -I$DEVKITPRO/libnx/include $($PKG --cflags sdl2 SDL2_ttf)"
-  LIBS="-specs=$DEVKITPRO/libnx/switch.specs $ARCH -L$DEVKITPRO/libnx/lib $($PKG --libs --static sdl2 SDL2_ttf) -lEGL -lGLESv2 -lglapi -ldrm_nouveau -lnx -lm"
+  CFLAGS="$ARCH -D__SWITCH__ -DHLE_WITH_LIBVORBIS -ffunction-sections -I$DEVKITPRO/libnx/include -I$DEVKITPRO/portlibs/switch/include $($PKG --cflags sdl2 SDL2_ttf)"
+  LIBS="-specs=$DEVKITPRO/libnx/switch.specs $ARCH -L$DEVKITPRO/libnx/lib $($PKG --libs --static sdl2 SDL2_ttf) -lEGL -lGLESv2 -lglapi -ldrm_nouveau -L$DEVKITPRO/portlibs/switch/lib -lvorbisfile -lvorbis -logg -lnx -lm"
   EXE=$OUT/trails.elf
   ;;
 *) echo "unknown target $TARGET" >&2; exit 1 ;;

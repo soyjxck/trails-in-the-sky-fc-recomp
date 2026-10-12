@@ -22,6 +22,7 @@
  *     --watch S          say every S seconds where the game is
  *     --trace PREFIX     list every call out whose name starts so (IDirect3D...)
  *     --d3d-log          list render targets, viewports and what is read back
+ *     --audio-out FILE   write everything the game's mixer puts out to a WAV file
  *
  * On the Switch there is no command line: the same options are read from
  * args.txt beside the program, if it is there, and what cannot work (started
@@ -97,9 +98,9 @@ static void stop_with(const char* fmt, ...) {
     exit(1);
 }
 
-/* The settings a first run starts with: sound and the movies off, which this
- * host cannot play yet (the game would stop where it first tried). Written
- * only when there is no settings file. */
+/* The settings a first run starts with: a 1280 by 720 picture, and the logo
+ * and opening movies off, which this host cannot play yet. Written only when
+ * there is no settings file. */
 static const char k_first_settings[] =
     "[Video]\r\n"
     "AdapterDX9=0\r\n"
@@ -134,8 +135,8 @@ static const char k_first_settings[] =
     "UseNewOrbmentLine=1\r\n"
     "UseNewOrbmentLineStyle=1\r\n"
     "[Sound]\r\n"
-    "BgmOff=1\r\n"
-    "SeOff=1\r\n"
+    "BgmOff=0\r\n"
+    "SeOff=0\r\n"
     "BgmVolume=6\r\n"
     "SeVolume=6\r\n"
     "NotUseDirectSound=0\r\n"
@@ -197,6 +198,19 @@ static void switch_start(int argc, char** argv) {
         home[cut - at] = 0;
         snprintf(path, sizeof path, "sdmc:%s", home);
         if (stat(path, &st) == 0) strcpy(g_home, home);
+    } else {
+        /* Not told where it was started from (an emulator given the file does
+         * not say): /switch/trails, or the folder named by the first line of
+         * /switch/trails/home.txt, which is how a second copy of the game (a
+         * modded one, say) is chosen there. */
+        FILE* f = fopen("sdmc:/switch/trails/home.txt", "r");
+        char home[sizeof g_home] = "";
+        if (f && fgets(home, sizeof home, f)) {
+            home[strcspn(home, "\r\n")] = 0;
+            snprintf(path, sizeof path, "sdmc:%s", home);
+            if (home[0] == '/' && stat(path, &st) == 0) strcpy(g_home, home);
+        }
+        if (f) fclose(f);
     }
     /* The SD card is the default device from here on, so a path that starts
      * with a slash is on it. */
@@ -337,6 +351,31 @@ void fc_wrap_00477180(void) { fc_orig_00477180(); }
 void native32_shim_CxxThrowException(void);
 void fc_hook_004FD597(void) { native32_shim_CxxThrowException(); }
 
+/* ---- the sound as mixed, kept as a WAV file (--audio-out) ---------------------- */
+static FILE* g_wav;
+static uint32_t g_wav_bytes, g_wav_rate;
+static void on_audio(const int16_t* stereo, int frames, int rate) {
+    if (!g_wav) return;
+    g_wav_rate = (uint32_t)rate;
+    g_wav_bytes += 4u * (uint32_t)fwrite(stereo, 4, (size_t)frames, g_wav);
+}
+static void wav_close(void) {
+    FILE* f = g_wav;
+    uint32_t head[11] = { 0x46464952u, 36 + g_wav_bytes, 0x45564157u, 0x20746D66u, 16, 0x00020001u, g_wav_rate, g_wav_rate * 4,
+                          0x00100004u, 0x61746164u, g_wav_bytes };      /* RIFF WAVE fmt: PCM, two channels of 16 bits */
+    if (!f) return;
+    g_wav = NULL;
+    fseek(f, 0, SEEK_SET);
+    fwrite(head, 4, 11, f);
+    fclose(f);
+}
+static void wav_open(const char* path) {
+    char blank[44] = { 0 };
+    if ((g_wav = fopen(path, "wb")) == NULL) { fprintf(stderr, "cannot write %s\n", path); return; }
+    fwrite(blank, 1, sizeof blank, g_wav);
+    hle_dsound_tap = on_audio;
+}
+
 /* ---- test runs: frames counted, pictures saved ------------------------------ */
 static const char* g_shots;
 static unsigned g_shot_every, g_frames, g_frame_now;
@@ -349,6 +388,7 @@ static void on_frame(unsigned frame) {
     }
     if (g_frames && frame >= g_frames) {
         fprintf(stderr, "[frames] %u presented with %lu draws: leaving\n", frame, hle_d3d9_draws());
+        wav_close();
         hle_exit(0);
     }
 }
@@ -452,6 +492,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--shot-every") && i + 1 < argc) g_shot_every = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--watch") && i + 1 < argc) g_watch = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--d3d-log")) hle_d3d9_log = 1;
+        else if (!strcmp(argv[i], "--audio-out") && i + 1 < argc) wav_open(argv[++i]);
         else if (!strcmp(argv[i], "--trace") && i + 1 < argc) setenv("HLE_SHIMTRACE", argv[++i], 1);
         else exe = argv[i];
     }

@@ -25,13 +25,13 @@ closing normally (docs/bringup.md, 9).
 Played by hand in a window with keyboard and sound, and it plays. Not tested
 yet: the logo and opening movies.
 
-**Off Windows: the title screen.** The same lifted C also builds for 64-bit
+**Off Windows: in game.** The same lifted C also builds for 64-bit
 Linux and for the Nintendo Switch (`tools/build_portable.sh`, `src/portable`),
 on a host that answers the Windows calls itself instead of passing them to
 Windows, Direct3D 9 included (on OpenGL ES 3). There the game starts and
-draws its title screen, on Linux and on the Switch under Ryujinx, and a
-controller's buttons reach it. Sound, movies, the keyboard and the mouse are
-not there yet (docs/bringup.md, 13 and 14).
+plays, on Linux and on the Switch (under Ryujinx and on a console), with a
+controller and with music. Movies, the keyboard and the mouse are not there
+yet (docs/bringup.md, 13 to 15).
 
 See [docs/bringup.md](docs/bringup.md) for every wall on the way.
 

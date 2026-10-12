@@ -6,7 +6,9 @@
 #   tools/run_portable.sh [frames] [a shot every N frames] [build folder]
 #
 # LIMIT is the most seconds the run may take (default 300), TAIL how much of
-# the log to show, ARGS more options for the host.
+# the log to show, ARGS more options for the host. SOUND=1 switches music and
+# sound effects on in the run's settings; nothing is heard either way (SDL's
+# dummy audio driver takes the samples).
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FRAMES=${1:-600}
@@ -16,6 +18,9 @@ RUN=${RUN_DIR:-$ROOT/run/portable}
 rm -rf "$RUN/saves" "$RUN/shots"
 mkdir -p "$RUN/shots"
 if [ -d "$ROOT/run/saves_base" ]; then cp -r "$ROOT/run/saves_base" "$RUN/saves"; else mkdir -p "$RUN/saves"; fi
+if [ -n "${SOUND:-}" ] && [ -f "$RUN/saves/FALCOM/ED6/config.ini" ]; then
+  sed -i 's/^\(BgmOff\|SeOff\)=1/\1=0/' "$RUN/saves/FALCOM/ED6/config.ini"
+fi
 cd "$ROOT/Trails in the Sky FC"
 code=0
 export SDL_AUDIODRIVER=${SDL_AUDIODRIVER:-dummy}      # a test run is never heard

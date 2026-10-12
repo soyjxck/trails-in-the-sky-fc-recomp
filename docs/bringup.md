@@ -499,10 +499,55 @@ What is still missing off Windows:
 | | |
 |---|---|
 | input | a controller works, read through SDL and added to what the game's own poll returns (`Input_Poll` is wrapped, as it is for play scripts on Windows); the keyboard, the mouse and DirectInput itself are not there |
-| sound | `mmio` (5 imports) for the WAV files, the Ogg Vorbis DLLs the game loads by name |
+| sound | done since: see 15 |
 | movies | DirectShow |
 | Direct3D | the stencil buffer, lights beyond the simple cases (nothing has drawn with one yet), meshes from X files, anything past the title screen that has not been reached |
 | the frame limiter, play scripts, the mod loader | the Windows host's: they move over |
 
 And what the console's own CPU and graphics chip make of it is still not
 measured: Ryujinx on a PC says nothing about that.
+
+## 15. Sound off Windows
+
+Music plays on Linux and on the Switch.
+
+The game streams its music itself: a looping DirectSound buffer that a
+multimedia timer tops up ten times a second, from an Ogg Vorbis file it
+decodes through `vorbisfile.dll`. It loads that DLL by name and asks it for
+seven functions with `GetProcAddress`. win32hle maps such a DLL without
+running its code, and so far answered nothing for it: the game took that as
+"no vorbisfile" and stayed silent, without complaint.
+
+- The seven are now answered by the host (`runtime/win32hle/vorbisfile.c`),
+  and `GetProcAddress` looks a mapped DLL's exports up among the host's shims
+  by name. They are cdecl, unlike everything else the host answers. What the
+  game calls an `OggVorbis_File` is only a name for the stream here: the file
+  is read whole through the game's own read function when it is opened, and
+  decoded from memory.
+- **Floor 0.** The first decoder tried was stb_vorbis, which needs no
+  library. It refused 55 of the game's 58 tracks: they were made by an encoder
+  old enough to use Vorbis's first way of describing a spectrum, which
+  stb_vorbis leaves out. The decoder is now the real libvorbis
+  (`HLE_WITH_LIBVORBIS`; devkitPro's on the Switch, the system's or
+  `VORBIS_CFLAGS`/`VORBIS_LIBS` on Linux), with stb_vorbis left as what a
+  build without the library falls back to, saying what it cannot play.
+- A failed open is not survivable: the game does not look at the answer of
+  `ov_open_callbacks` and reads the channel count from whatever `ov_info`
+  returns.
+- `mmio` (the five imports for a music track kept as a wave file) is answered
+  too, for files on disk; nothing has asked for it yet.
+
+How it was checked without listening: `--audio-out FILE` writes everything
+the mixer puts out to a WAV file (test runs play into SDL's dummy driver).
+Against the title track decoded by ffmpeg, the recording correlates at 0.994,
+at 0.56 of the level, which is the game's own music volume setting.
+`SOUND=1 tools/run_portable.sh` switches music and effects on for a run.
+
+Sound effects are wave files the game reads itself and plays from plain
+DirectSound buffers, which win32hle already had; they are switched on with
+the music.
+
+A second copy of the game (a modded one, say) is a second folder on the card
+with the program in it: the program works from the folder it was started
+from. An emulator given the file does not say where that is; there the first
+line of `/switch/trails/home.txt` names the folder to use.
