@@ -68,7 +68,9 @@ HOOKS = {0x004FD597}
 # whether and when to run the original (src/runtime/host.c).
 #   0x004802C0  Input_Poll: the buttons held, in edx:eax. A play script
 #               (--script) answers instead of the keyboard.
-WRAPS = {0x004802C0}
+#   0x004C11A0  Clock_Update: the frame limiter is in it, as a loop that
+#               spins on Sleep(0). The host waits properly first.
+WRAPS = {0x004802C0, 0x004C11A0}
 
 # Fixes to the game itself: C run after the instruction at the address.
 # The lift stays faithful; a patch is for a fix the original cannot have.

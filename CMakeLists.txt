@@ -30,6 +30,7 @@ endif()
 
 add_executable(trails
   src/runtime/host.c
+  src/runtime/profile.c
   ${PCRECOMP}/runtime/native32/native32.c
   ${PCRECOMP}/runtime/recomp32/image_loader.c
   ${PCRECOMP}/runtime/recomp32/recomp_trace.c
@@ -54,8 +55,8 @@ if(MSVC_VERSION GREATER_EQUAL 1950)
   string(APPEND GEN_OPT ";/d2SSAOptimizer-")
 endif()
 set_source_files_properties(${GEN_SOURCES} PROPERTIES COMPILE_OPTIONS "/w;${GEN_OPT}")
-set_source_files_properties(src/runtime/host.c PROPERTIES COMPILE_OPTIONS "/W3")
-target_link_libraries(trails PRIVATE user32 gdi32 kernel32 winmm ole32)
+set_source_files_properties(src/runtime/host.c src/runtime/profile.c PROPERTIES COMPILE_OPTIONS "/W3")
+target_link_libraries(trails PRIVATE user32 gdi32 kernel32 winmm ole32 dbghelp psapi)
 
 option(FC_TRACE "record a ring buffer of lifted function entries" OFF)
 if(FC_TRACE)

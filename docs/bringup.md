@@ -191,3 +191,77 @@ thread, through native32's machine lock.
 Not tested yet: the game in a visible window with a real keyboard, mouse or
 pad; what the sound sounds like; and the logo and opening movies, which
 did not start in an unattended run even when switched on in `config.ini`.
+
+## 10. Where a frame's time went
+
+`--profile FILE` samples the main thread a thousand times a second and says
+where it was, by this build's own symbols (`src/runtime/profile.c`). The
+first profile, loading a save and walking about:
+
+```
+Where the main thread was:
+    9.05%  asleep (Sleep, waits)
+   20.84%  lifted game code
+   35.11%  the runtime in this exe (bridge, lock, dispatch, host)
+   35.00%  native code the game called (Windows, Direct3D, the driver)
+
+   11.91%  native32_name      11.32%  native_bridge      4.81%  dispatch_find
+```
+
+The game's own code was a fifth of the thread. The rest was getting in and
+out of it, about 28,000 times a frame (`--count-natives`):
+
+| what | calls a frame | |
+|---|---|---|
+| `Sleep`, `PeekMessageW`, `QueryPerformanceCounter` | 13,500 | the game's frame limiter, spinning |
+| D3DX vector maths (`D3DXMatrixMultiply` 4,650) | 10,500 | |
+| Direct3D 9 device calls | 3,000 | |
+
+What was done about it, most of it in the pcrecomp fork's bridge:
+
+- **The register file stays put.** The bridge released the machine lock
+  around every native call and saved, then reloaded, every register (x87,
+  MMX and SSE included) each time. The registers now stay in the globals and
+  move only when a different thread claims the machine.
+- **One instruction was a tenth of the thread.** After each native call the
+  bridge ran `fxam` to tell a returned float from an `fninit`. An empty
+  `st(0)` still holds whatever bits were left in it, after MMX code a NaN
+  pattern, and classifying one takes a microcode assist. It now runs only
+  when the x87 stack did move.
+- **Names and dispatch.** The import's name, kept for fault reports, was a
+  walk of every name at every call (a cache now); an indirect call was a
+  binary search of 7,220 functions (a flat table now).
+- **Calls that keep the machine.** Direct3D, the vector maths, the heap and
+  the clock neither sleep nor wait for another thread of the game, so the
+  bridge does not hand the machine over for them at all
+  (`native32_fast_*`, `fast_imports` in `host.c`). The seven hottest D3DX
+  functions are called directly: the real functions still, bit for bit.
+- **The frame limiter sleeps.** `Clock_Update` (0x004C11A0) held a frame to 8
+  ms by looping on `PumpMessages(); Sleep(0)`: thousands of turns a frame, and
+  one core at full load to do nothing. The host waits instead (a
+  high-resolution timer, then a spin as short as the timer has earned) on a
+  schedule, so the rate is exact, and `--fps N` sets it.
+
+After, same script, same machine:
+
+| | main thread, each frame | of one core |
+|---|---|---|
+| the game's limiter, as shipped (`--original-limiter`) | 7.86 ms | 92% |
+| 125 a second (the default) | 4.26 ms | 50% |
+| 60 a second | 4.75 ms | 27% |
+
+```
+--fps 125   1287 frames, 125.0 a second (8.00 ms each); 0 took half as long again or more, the longest 8.6 ms
+--fps 60     566 frames,  60.0 a second (16.67 ms each); 0 took half as long again or more, the longest 17.1 ms
+--fps 144   1552 frames, 144.0 a second (6.94 ms each); 0 took half as long again or more, the longest 8.3 ms
+--fps 240   2514 frames, 240.0 a second (4.17 ms each); 0 took half as long again or more, the longest 5.1 ms
+```
+
+The bridge and dispatch are now about 4% of the thread, lifted code 22%.
+Above 125 frames a second the game runs on shorter time steps than it was
+made for; nothing has gone wrong at 144 and 240 on the title screen, and
+that is all that has been looked at.
+
+Start-up has its own cost, not yet dealt with (`--slow-calls 200`): the GOG
+Galaxy SDK's `Init` takes a second to fail, DirectInput's set-up 0.8 s, and
+the game's "is this pad an XInput one" check, a WMI query, 0.7 s.

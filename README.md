@@ -64,7 +64,10 @@ game runs wrong (docs/bringup.md, 8).
 | `--silent` | mute the game (its sound code still runs) |
 | `--shots DIR`, `--shot-every N` | save the back buffer as a PNG every N frames |
 | `--script FILE` | play a script of button presses (`tests/*.txt`; `src/runtime/host.c` has the format) |
+| `--fps N` | frames a second: 30, 60, 144... (default 125, the game's own ceiling; 0 = no limit) |
 | `--watchdog S` | report where the game is and stop after S seconds |
+| `--profile FILE` | sample the main thread and write where its time went |
+| `--count-natives`, `--slow-calls MS` | what the game calls outside its own code, and which calls are slow |
 | `--calltrace FILE`, `--watch VA`, ... | pcrecomp's bring-up instruments (`trails.exe --help`) |
 
 `play.cmd` is `build\trails.exe --run` with the log kept in `run\play.log`.

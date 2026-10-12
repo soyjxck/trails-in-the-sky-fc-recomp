@@ -23,11 +23,14 @@
 
 #include <d3d9.h>
 #include <objbase.h>
+#include <psapi.h>
+#include <mmsystem.h>
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
 
 #include "native32.h"
 #include "recomp_trace.h"
+#include "profile.h"
 
 extern const uint32_t fc_entry_va;    /* recomp_dispatch.c */
 
@@ -45,6 +48,10 @@ static DWORD g_t0;                    /* GetTickCount at start, for the log's ti
 static volatile LONG g_presents;      /* frames the game has presented */
 static char g_shots[MAX_PATH];        /* --shots: where frames are saved */
 static HWND g_window;                 /* the game's top-level window */
+static HANDLE g_guest_thread;         /* the thread the game's main function runs on */
+static void pace_report(void);
+static uint64_t thread_cycles(HANDLE thread);
+static uint64_t g_pace_cycles0, g_pace_tsc0;
 
 #define ARG(n) MEM32(g_esp + 4 + 4 * (n))
 #define RET(nargs) (g_esp += 4 + 4 * (nargs))
@@ -180,6 +187,9 @@ static void shim_TerminateProcess(void) {
 static void shim_ExitProcess(void) {
     fprintf(stderr, "\n[exit] ExitProcess(%u) from sub_%08X\n", ARG(0), g_cur_func);
     recomp_trace_flush();
+    profile_report();
+    pace_report();
+    if (native32_count_natives) native32_dump_counts(60);
     ExitProcess(ARG(0));
 }
 
@@ -457,6 +467,140 @@ void fc_wrap_004802C0(void) {
     }
 }
 
+/* ---- the frame limiter ---------------------------------------------------------
+ * Clock_Update (0x004C11A0; thiscall, two byte arguments: wait, notify) is
+ * where the game holds a frame back: with `wait` set it loops
+ *
+ *     read the counter; if more than 7 ms have passed, go on;
+ *     PumpMessages(); Sleep(0);
+ *
+ * so no frame is shorter than 8 ms (125 a second), and every frame spins on
+ * Sleep(0) for whatever is left of its 8 ms: thousands of turns, each three
+ * calls out of the lifted code, and one CPU core kept at full load to wait.
+ *
+ * The host waits first, asleep, until the moment that loop would let the
+ * The host does the waiting instead, asleep: a high-resolution timer for all
+ * but the last millisecond and a half, then a short spin, and the game's loop
+ * is told not to wait (its `wait` argument cleared). --fps N sets the rate
+ * (30, 60, 120, 144...; 0 = no limit; default 125, the game's own ceiling;
+ * above that the game runs on shorter time steps than it was made for).
+ * The message pump the loop ran still runs while waiting.
+ * --original-limiter leaves the game's loop as it was. */
+#define FC_CLOCK_LAST      0x007C8BB8u   /* i64: counter value at the last update */
+#define FC_CLOCK_LEFTOVER  0x007C8BC0u   /* i64: ticks left over after whole milliseconds */
+#define FC_CLOCK_PER_MS    0x007C8BD0u   /* i64: counter ticks per millisecond */
+#define FC_CLOCK_COUNTER   0x007C8B4Du   /* byte: a performance counter is in use */
+#define FC_ORIGINAL_FPS 125
+
+static int g_fps_limit = FC_ORIGINAL_FPS;
+static HANDLE g_frame_timer;
+static LARGE_INTEGER g_qpc_freq;
+
+void sub_004B39E0(void);              /* PumpMessages, lifted */
+void fc_orig_004C11A0(void);
+
+static void frame_wait(int64_t target) {
+    /* How long before the moment to stop sleeping and spin instead: as long as
+     * the timer has lately woken late, and a little more. A good timer earns
+     * a short spin (a quarter of a millisecond), a poor one up to two. */
+    static double margin = 1.0;
+    for (;;) {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        int64_t left = target - now.QuadPart;
+        if (left <= 0) return;
+        double ms = (double)left * 1000.0 / (double)g_qpc_freq.QuadPart;
+        if (ms <= margin + 0.1) {     /* the last stretch: no timer is this exact */
+            YieldProcessor();
+            continue;
+        }
+        double slice = ms - margin > 4.0 ? 4.0 : ms - margin;
+        LARGE_INTEGER due, woke;
+        const char* was = g_cur_import;
+        due.QuadPart = -(LONGLONG)(slice * 10000.0);
+        g_cur_import = "(frame limiter) WaitForSingleObject";
+        mach_leave();                 /* asleep: the music's thread can have the machine */
+        if (g_frame_timer && SetWaitableTimer(g_frame_timer, &due, 0, NULL, NULL, FALSE))
+            WaitForSingleObject(g_frame_timer, 50);
+        else
+            Sleep(1);
+        QueryPerformanceCounter(&woke);
+        mach_enter();
+        g_cur_import = was;
+        {
+            double late = (double)(woke.QuadPart - now.QuadPart) * 1000.0 / (double)g_qpc_freq.QuadPart - slice;
+            double want = late < 0 ? 0.25 : late * 2.0 + 0.25;
+            margin = want > margin ? want : margin * 0.98 + want * 0.02;   /* up at once, down slowly */
+            if (margin > 2.0) margin = 2.0;
+        }
+        if (ms - slice > 3.0) {       /* the game's loop pumped messages while it waited; not in the last stretch */
+            uint32_t ecx = g_ecx, eax = g_eax, edx = g_edx;
+            PUSH32(g_esp, RECOMP_RETADDR);
+            sub_004B39E0();
+            g_ecx = ecx, g_eax = eax, g_edx = edx;
+        }
+    }
+}
+
+/* Frames are let go on a schedule, each one period after the moment the last
+ * was DUE rather than after the moment it actually went: waking up a little
+ * late then costs that frame a little, not every frame after it, and the rate
+ * comes out as asked. A frame that overruns by more than a period (a load)
+ * starts the schedule again from now. */
+void fc_wrap_004C11A0(void) {
+    static int64_t due;
+    if (MEM8(g_esp + 4) && MEM8(FC_CLOCK_COUNTER) && g_fps_limit >= 0) {
+        if (g_fps_limit > 0) {
+            int64_t period = g_qpc_freq.QuadPart / g_fps_limit;
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            if (!due) due = *(const int64_t*)(uintptr_t)FC_CLOCK_LAST;
+            due += period;
+            if (due < now.QuadPart - period) due = now.QuadPart;
+            frame_wait(due);
+        }
+        MEM8(g_esp + 4) = 0;          /* the wait is done: the game's own loop has nothing to add */
+    }
+    fc_orig_004C11A0();
+}
+
+/* ---- D3DX vector maths, called directly --------------------------------------
+ * Half of a frame's calls out of the lifted code are these few functions
+ * (D3DXMatrixMultiply alone about 4,600 times). They are the real D3DX
+ * functions still, so every result is bit for bit what it was; only the way
+ * there is shorter than the general bridge, which copies 24 argument slots
+ * and watches for exceptions and x87 results it cannot have here. */
+typedef void* (WINAPI* d3dx_pp_t)(void*, const void*);
+typedef void* (WINAPI* d3dx_ppp_t)(void*, const void*, const void*);
+typedef void* (WINAPI* d3dx_pfff_t)(void*, float, float, float);
+static d3dx_ppp_t g_d3dx_multiply, g_d3dx_transform_coord;
+static d3dx_pp_t g_d3dx_transpose, g_d3dx_normalize;
+static d3dx_pfff_t g_d3dx_translation, g_d3dx_scaling, g_d3dx_yaw_pitch_roll;
+
+#define PARG(n) ((void*)(uintptr_t)ARG(n))
+#define FARG(n) (*(const float*)(uintptr_t)(g_esp + 4 + 4 * (n)))
+static void shim_D3DXMatrixMultiply(void) { g_eax = (uint32_t)(uintptr_t)g_d3dx_multiply(PARG(0), PARG(1), PARG(2)); RET(3); }
+static void shim_D3DXVec3TransformCoord(void) { g_eax = (uint32_t)(uintptr_t)g_d3dx_transform_coord(PARG(0), PARG(1), PARG(2)); RET(3); }
+static void shim_D3DXMatrixTranspose(void) { g_eax = (uint32_t)(uintptr_t)g_d3dx_transpose(PARG(0), PARG(1)); RET(2); }
+static void shim_D3DXVec3Normalize(void) { g_eax = (uint32_t)(uintptr_t)g_d3dx_normalize(PARG(0), PARG(1)); RET(2); }
+static void shim_D3DXMatrixTranslation(void) { g_eax = (uint32_t)(uintptr_t)g_d3dx_translation(PARG(0), FARG(1), FARG(2), FARG(3)); RET(4); }
+static void shim_D3DXMatrixScaling(void) { g_eax = (uint32_t)(uintptr_t)g_d3dx_scaling(PARG(0), FARG(1), FARG(2), FARG(3)); RET(4); }
+static void shim_D3DXMatrixRotationYawPitchRoll(void) { g_eax = (uint32_t)(uintptr_t)g_d3dx_yaw_pitch_roll(PARG(0), FARG(1), FARG(2), FARG(3)); RET(4); }
+
+static int d3dx_direct(void) {
+    HMODULE m = LoadLibraryA("d3dx9_43.dll");
+    if (!m) return 0;
+    g_d3dx_multiply = (d3dx_ppp_t)(void*)GetProcAddress(m, "D3DXMatrixMultiply");
+    g_d3dx_transform_coord = (d3dx_ppp_t)(void*)GetProcAddress(m, "D3DXVec3TransformCoord");
+    g_d3dx_transpose = (d3dx_pp_t)(void*)GetProcAddress(m, "D3DXMatrixTranspose");
+    g_d3dx_normalize = (d3dx_pp_t)(void*)GetProcAddress(m, "D3DXVec3Normalize");
+    g_d3dx_translation = (d3dx_pfff_t)(void*)GetProcAddress(m, "D3DXMatrixTranslation");
+    g_d3dx_scaling = (d3dx_pfff_t)(void*)GetProcAddress(m, "D3DXMatrixScaling");
+    g_d3dx_yaw_pitch_roll = (d3dx_pfff_t)(void*)GetProcAddress(m, "D3DXMatrixRotationYawPitchRoll");
+    return g_d3dx_multiply && g_d3dx_transform_coord && g_d3dx_transpose && g_d3dx_normalize &&
+           g_d3dx_translation && g_d3dx_scaling && g_d3dx_yaw_pitch_roll;
+}
+
 /* ---- Direct3D 9 -------------------------------------------------------------
  * IDirect3D9::CreateDevice (slot 16) and the device's Reset (16) and Present
  * (17) are wrapped by patching the vtables d3d9.dll shares between every
@@ -495,6 +639,54 @@ static void save_shot(IDirect3DDevice9* dev, LONG frame, const char* name) {
 
 static HRESULT g_last_present_hr;
 
+/* How even the frames are, for the log: the time from each Present to the
+ * next, as an average and the share of frames that took much longer. */
+static LARGE_INTEGER g_pace_last, g_pace_first;
+static double g_pace_sum_ms, g_pace_worst_ms;
+static LONG g_pace_n, g_pace_late;
+
+static void pace_note(void) {
+    LARGE_INTEGER now, f;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&f);
+    if (g_pace_last.QuadPart) {
+        double ms = (double)(now.QuadPart - g_pace_last.QuadPart) * 1000.0 / (double)f.QuadPart;
+        static LONG warm_up;          /* the first frames load things: not what pacing is about */
+        if (warm_up < 120) {
+            if (++warm_up == 120) g_pace_cycles0 = thread_cycles(g_guest_thread), g_pace_tsc0 = __rdtsc();
+        } else {
+            double avg = g_pace_n ? g_pace_sum_ms / g_pace_n : ms;
+            g_pace_sum_ms += ms;
+            g_pace_n++;
+            if (ms > g_pace_worst_ms) g_pace_worst_ms = ms;
+            if (ms > avg * 1.5 + 1.0) g_pace_late++;
+        }
+    } else {
+        g_pace_first = now;
+    }
+    g_pace_last = now;
+}
+
+/* What a frame costs, not only how often one came: the main thread's share of
+ * a core, by the cycles it actually ran. (The tick-based thread times charge a
+ * whole timer tick to whoever is running when it fires, and a thread woken by
+ * that very timer always is.) */
+static uint64_t thread_cycles(HANDLE thread) {
+    ULONG64 c = 0;
+    return thread && QueryThreadCycleTime(thread, &c) ? c : 0;
+}
+
+static uint64_t g_pace_cycles0, g_pace_tsc0;
+
+static void pace_report(void) {
+    if (g_pace_n < 2) return;
+    double share = (double)(thread_cycles(g_guest_thread) - g_pace_cycles0) / (double)(__rdtsc() - g_pace_tsc0);
+    fprintf(stderr, "[frames] %ld frames, %.1f a second (%.2f ms each); %ld took half as long again or more, the longest %.1f ms\n",
+            g_pace_n, 1000.0 * g_pace_n / g_pace_sum_ms, g_pace_sum_ms / g_pace_n, g_pace_late, g_pace_worst_ms);
+    fprintf(stderr, "[frames] the main thread ran for %.2f ms of each frame, %.0f%% of one core\n",
+            share * g_pace_sum_ms / g_pace_n, 100.0 * share);
+}
+
 static HRESULT WINAPI host_Present(void* dev, const RECT* src, const RECT* dst, HWND wnd, const void* dirty) {
     LONG n = InterlockedIncrement(&g_presents);
     if (n == 1) fprintf(stderr, "[d3d9] first Present\n");
@@ -505,6 +697,7 @@ static HRESULT WINAPI host_Present(void* dev, const RECT* src, const RECT* dst, 
         g_shot_pending[0] = 0;
     }
     HRESULT hr = g_real_present(dev, src, dst, wnd, dirty);
+    pace_note();
     if (hr != g_last_present_hr) {       /* a lost device shows here first */
         fprintf(stderr, "[d3d9] Present %ld at %lu ms -> 0x%08lX\n", n, GetTickCount() - g_t0, (unsigned long)hr);
         g_last_present_hr = hr;
@@ -529,6 +722,9 @@ static DWORD WINAPI desktop_watch(LPVOID unused) {
             fprintf(stderr, "[desktop] at %lu ms: primary %dx%d -> %dx%d, monitors %d -> %d, desktop %dx%d -> %dx%d\n",
                     GetTickCount() - g_t0, w0, h0, w, h, n0, n, vw0, vh0, vw, vh);
         w0 = w, h0 = h, n0 = n, vw0 = vw, vh0 = vh;
+        /* Also here, not only at each Present: once the game believes it is
+         * inactive it stops drawing, and would never be told otherwise. */
+        if (g_force_active) *(volatile uint8_t*)(uintptr_t)FC_GAME_ACTIVE = 1;
         Sleep(50);
     }
 }
@@ -591,8 +787,41 @@ static HRESULT WINAPI host_CreateDevice(void* d3d, UINT adapter, DWORD type, HWN
     return hr;
 }
 
+/* ---- native calls that keep the machine ---------------------------------------
+ * A frame of this game is about 20,000 calls out of lifted code, nearly all
+ * of them short: Direct3D state and draw calls, D3DX vector maths, the heap,
+ * the clock. For those the bridge does not hand the machine over
+ * (native32_fast_*): none of them waits for another thread of the game. What
+ * stays on the slow path is anything that can sleep or wait (Sleep, the
+ * message pump, file and wait calls) and Present, which is the host's own
+ * function and lies outside Direct3D's range. --count-natives lists what a
+ * run called, and which of it was fast. */
+static void fast_module(HMODULE m) {
+    MODULEINFO mi = { 0 };
+    if (m && GetModuleInformation(GetCurrentProcess(), m, &mi, sizeof mi))
+        native32_fast_range((uint32_t)(uintptr_t)mi.lpBaseOfDll, (uint32_t)(uintptr_t)mi.lpBaseOfDll + mi.SizeOfImage);
+}
+
+static void fast_imports(void) {
+    static const char* const names[] = {
+        "D3DXMatrix*", "D3DXVec3*", "D3DXQuaternion*", "D3DXGetFVFVertexSize",
+        "QueryPerformanceCounter", "QueryPerformanceFrequency", "GetTickCount", "timeGetTime",
+        "GetLastError", "SetLastError", "TlsGetValue", "TlsSetValue", "GetCurrentThreadId",
+        "GetCurrentProcessId", "GetCurrentProcess", "GetProcessHeap", "HeapAlloc", "HeapFree",
+        "HeapReAlloc", "HeapSize", "MultiByteToWideChar", "WideCharToMultiByte", "lstrcmpiA",
+        "lstrcpyW", "lstrcatW", "GetACP", "GetOEMCP", "GetCPInfo", "GetStringTypeW", "LCMapStringW",
+        "CompareStringW", "EncodePointer", "DecodePointer", "IsProcessorFeaturePresent",
+        "GetSystemTimeAsFileTime", "GetAsyncKeyState", "XInputGetState", "SetRect",
+        "GetSystemMetrics", "MapVirtualKeyW", "IsDebuggerPresent", "InitializeSListHead",
+    };
+    int n = 0;
+    for (int i = 0; i < (int)(sizeof names / sizeof names[0]); i++) n += native32_fast_import(names[i]);
+    fprintf(stderr, "[bridge] %d imports and Direct3D keep the machine\n", n);
+}
+
 static int wrap_d3d9(void) {
     HMODULE m = LoadLibraryA("d3d9.dll");
+    fast_module(m);
     d3d_create9_t create = m ? (d3d_create9_t)(void*)GetProcAddress(m, "Direct3DCreate9") : NULL;
     void* d3d = create ? create(D3D_SDK_VERSION) : NULL;
     if (!d3d) { fprintf(stderr, "cannot create Direct3D 9\n"); return 1; }
@@ -636,6 +865,14 @@ static int session_mute(BOOL mute) {
 }
 
 static native32_shim_t g_shims[] = {
+    /* the seven D3DX entries stay first: main() drops them if D3DX is not there to call */
+    { "D3DXMatrixMultiply", shim_D3DXMatrixMultiply },
+    { "D3DXVec3TransformCoord", shim_D3DXVec3TransformCoord },
+    { "D3DXMatrixTranspose", shim_D3DXMatrixTranspose },
+    { "D3DXVec3Normalize", shim_D3DXVec3Normalize },
+    { "D3DXMatrixTranslation", shim_D3DXMatrixTranslation },
+    { "D3DXMatrixScaling", shim_D3DXMatrixScaling },
+    { "D3DXMatrixRotationYawPitchRoll", shim_D3DXMatrixRotationYawPitchRoll },
     { "GetModuleHandleW", shim_GetModuleHandleW },
     { "GetModuleHandleExW", shim_GetModuleHandleExW },
     { "GetModuleFileNameA", shim_GetModuleFileNameA },
@@ -764,6 +1001,9 @@ static DWORD WINAPI watchdog(LPVOID unused) {
             g_watchdog_s, g_cur_func, g_cur_import, g_icall_count, g_presents);
     native32_dump_icalls(8);
     recomp_trace_flush();
+    profile_report();
+    pace_report();
+    if (native32_count_natives) native32_dump_counts(60);
     fflush(stderr);
     TerminateProcess(GetCurrentProcess(), 4);
     return 0;
@@ -788,6 +1028,7 @@ int main(int argc, char** argv) {
     const char* game = NULL;
     const char* savedir = NULL;
     const char* script = NULL;
+    const char* profile = NULL;
     const char* extra = "";             /* --gameargs "...": appended to the guest's command line */
     char exe_full[MAX_PATH], game_full[MAX_PATH];
     int run = 0;
@@ -801,22 +1042,33 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--unattended")) g_unattended = 1;
         else if (!strcmp(argv[i], "--active")) g_force_active = 1;
         else if (!strcmp(argv[i], "--silent")) g_silent = 1;
+        else if (!strcmp(argv[i], "--fps") && i + 1 < argc) g_fps_limit = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1;
         else if (!strcmp(argv[i], "--game") && i + 1 < argc) game = argv[++i];
         else if (!strcmp(argv[i], "--savedir") && i + 1 < argc) savedir = argv[++i];
         else if (!strcmp(argv[i], "--shots") && i + 1 < argc) GetFullPathNameA(argv[++i], MAX_PATH, g_shots, NULL);
         else if (!strcmp(argv[i], "--shot-every") && i + 1 < argc) g_shot_every = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) script = argv[++i];
+        else if (!strcmp(argv[i], "--profile") && i + 1 < argc) {
+            static char full[MAX_PATH];      /* before the working directory changes */
+            GetFullPathNameA(argv[++i], MAX_PATH, full, NULL);
+            profile = full;
+        }
         else if (!strcmp(argv[i], "--gameargs") && i + 1 < argc) extra = argv[++i];
         else if (!strcmp(argv[i], "--watchdog") && i + 1 < argc) g_watchdog_s = strtoul(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--probe") && i + 1 < argc && g_nprobe < MAX_PROBES)
             g_probe[g_nprobe++] = strtoul(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--native-trace")) native32_trace_native = 1;
+        else if (!strcmp(argv[i], "--count-natives")) native32_count_natives = 1;
+        else if (!strcmp(argv[i], "--slow-calls") && i + 1 < argc) native32_slow_ms = strtoul(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--callbacks")) native32_trace_callbacks = 1;
         else {
             printf("usage: trails [--run] [--game DIR] [--savedir DIR] [--unattended] [--active] [--silent]\n"
+                   "              [--fps N (0 = no limit; default 125, the game's own)] [--original-limiter]\n"
                    "              [--shots DIR] [--shot-every N] [--script FILE] [--watchdog S]\n"
-                   "              [--gameargs \"...\"]\n"
-                   "              [--probe VA] [--native-trace] [--callbacks]\n");
+                   "              [--profile FILE] [--gameargs \"...\"]\n"
+                   "              [--probe VA] [--native-trace] [--callbacks] [--count-natives]\n"
+                   "              [--slow-calls MS]\n");
             recomp_trace_help();
             return argv[i][1] == 'h' || argv[i][2] == 'h' ? 0 : 1;
         }
@@ -891,7 +1143,17 @@ int main(int argc, char** argv) {
     if (!span) { fprintf(stderr, "cannot map %s at 0x%08X\n", exe_full, FC_IMAGE_BASE); return 1; }
     printf("  mapped %s: 0x%08X-0x%08X\n", FC_EXE, FC_IMAGE_BASE, FC_IMAGE_BASE + span);
     g_resources = LoadLibraryExA(exe_full, NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE | LOAD_LIBRARY_AS_DATAFILE);
-    if (native32_bind(FC_IMAGE_BASE, g_shims, (int)(sizeof g_shims / sizeof g_shims[0]))) return 1;
+    {
+        int skip = d3dx_direct() ? 0 : 7;       /* without D3DX to call, its imports bind as usual (and fail there) */
+        if (native32_bind(FC_IMAGE_BASE, g_shims + skip, (int)(sizeof g_shims / sizeof g_shims[0]) - skip)) return 1;
+    }
+    fast_imports();
+    QueryPerformanceFrequency(&g_qpc_freq);
+    /* A timer that keeps its word to well under a millisecond, without
+     * changing the whole system's tick (Windows 10 1803 on); else the tick. */
+    g_frame_timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
+                                           TIMER_ALL_ACCESS);
+    if (!g_frame_timer) timeBeginPeriod(1);
     printf("  guest command line %s\n", g_guest_cmdline);
     if (savedir) printf("  Saved Games folder %ls\n", g_savedir);
 
@@ -908,6 +1170,8 @@ int main(int argc, char** argv) {
     fflush(stdout);
     HANDLE t = CreateThread(NULL, GUEST_MAIN_STACK, guest_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
     if (!t) { fprintf(stderr, "cannot start the guest thread (error %lu)\n", GetLastError()); return 1; }
+    g_guest_thread = t;
+    if (profile) profile_start(t, profile);
     WaitForSingleObject(t, INFINITE);
     DWORD code = 0;
     GetExitCodeThread(t, &code);
