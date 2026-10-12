@@ -899,3 +899,68 @@ player confirmed the borderless window at 3840 by 2160.
 
 Not tried yet: Alt+Tab out of full screen and back, and the mouse row with a
 real mouse.
+
+## 22. Frame times
+
+`--frame-times FILE` writes every frame: when it was presented, how long
+after the one before, and how much of that the main thread ran (by its cycle
+count). A play script's `log` lines mark the file, so a stretch of frames can
+be told from the loading before it.
+
+The run measured is a walk: a chapter 3 save loaded in Zeiss, out of doors,
+and 72 seconds of walking and turning the camera, unattended and muted, on
+the machine all of this was developed on (a 120 Hz screen, a GeForce RTX
+4090). The window of an unattended run is off screen, so these are the
+game's and the renderer's times, not the desktop's. Frames in which the test
+saved a picture are left out (a 3840 by 2160 PNG takes two to three
+seconds). Frame time in ms; the last column is the main thread's share of
+one core.
+
+| | frames a second | median | 99% | 99.9% | main thread |
+|---|---|---|---|---|---|
+| Direct3D 9, 125 (the default) | 124.5 | 7.99 | 10.21 | 11.59 | 46% |
+| Vulkan (DXVK), 125 | 124.6 | 8.00 | 9.82 | 10.83 | 42% |
+| Direct3D 12, 125 | 124.5 | 7.99 | 10.13 | 11.31 | 48% |
+| Direct3D 9, `--fps 144` | 143.5 | 6.94 | 8.91 | 9.91 | 51% |
+| Direct3D 9, `--fps 60` | 59.8 | 16.66 | 18.64 | 19.76 | 21% |
+| Direct3D 9, `--fps 30` | 29.7 | 33.31 | 36.71 | 101.49 | 15% |
+| Direct3D 9, the game's own limiter | 123.1 | 7.99 | 10.57 | 20.08 | 94% |
+| Direct3D 9, no limit | 682.6 | 0.63 | 4.55 | 5.76 | 91% |
+| Vulkan, no limit | 913.2 | 0.38 | 4.03 | 5.26 | 98% |
+| Direct3D 12, no limit | 539.2 | 1.11 | 4.89 | 6.26 | 89% |
+| the modded copy, Direct3D 9, 125 | 124.5 | 7.99 | 10.16 | 11.41 | 45% |
+| 3840 by 2160, Direct3D 9, 125 | 119.1 | 7.99 | 12.95 | 21.48 | 42% |
+| 3840 by 2160, Vulkan, 125 | 124.4 | 8.00 | 12.01 | 14.21 | 51% |
+| 3840 by 2160, Direct3D 12, 125 | 124.1 | 7.97 | 12.49 | 16.07 | 61% |
+| 3840 by 2160, Direct3D 9, no limit | 352.3 | 1.16 | 25.10 | 53.80 | 63% |
+| 3840 by 2160, Vulkan, no limit | 438.7 | 1.59 | 6.64 | 26.20 | 89% |
+
+What it says:
+
+- **The pace holds.** At every limit the median frame is the limit's own
+  length to a hundredth of a millisecond, and ninety-nine frames in a hundred
+  are within about two milliseconds of it, under all three renderers.
+- **One hitch, the game's own.** Every run has one frame of about 0.3 s at
+  the same place in the walk, with the main thread busy for nearly all of
+  it: the game loading something as the party walks on. It is in the lifted
+  code, not in a renderer; what it loads has not been looked at.
+- **The host's limiter is half the cost of the game's.** The game holds a
+  frame back by spinning (94% of a core); the host sleeps to the same pace
+  (46%).
+- **There is a great deal of room.** Without a limit the walk runs at 540 to
+  910 frames a second, and at 3840 by 2160 still at 350 to 440. Vulkan is
+  the lightest on the main thread and the most even without a limit;
+  Direct3D 9 at 3840 by 2160 without a limit has frames of 25 ms among its
+  one-millisecond ones.
+- **The modded copy costs nothing** that this walk can show.
+
+Two cautions from making it. The first `--fps 60` run stalled for most of a
+minute, in frames of up to 15 seconds with the main thread idle; two more on
+a quiet machine, one of them with `--slow-calls`, were clean, so that was
+the machine and not the limit, and the lesson is to keep the machine still
+while timing. And the 3840 by 2160 line for Direct3D 9 has its frames a
+second pulled down by one three-second frame that is one of the test's own
+pictures, not left out by the rule above.
+
+Vertical sync in a window is section 21's: 32 frames a second before, 120
+after.
