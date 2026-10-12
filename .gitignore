@@ -1,0 +1,47 @@
+# Build output
+build/
+build-*/
+out/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# IDE
+.vs/
+.vscode/
+*.user
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Retail game files: not redistributed. Bring your own copy of
+# The Legend of Heroes: Trails in the Sky (Steam).
+Trails in the Sky FC/
+game/
+*.exe
+*.dll
+*.dat
+*.dir
+*.avi
+*.ogg
+
+# Generated from the binary, never committed: the lifted C, the function
+# catalog, RTTI dumps and every other analysis of ed6_win_DX9.exe.
+src/recomp/gen/
+work/
+analysis/
+
+# Runs
+run/
+*.log
+
+# Local notes
+*.local.md
+
+# OS
+Thumbs.db
+Desktop.ini

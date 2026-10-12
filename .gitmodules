@@ -1,0 +1,4 @@
+[submodule "pcrecomp"]
+	path = pcrecomp
+	url = https://github.com/soyjxck/pcrecomp.git
+	branch = main
