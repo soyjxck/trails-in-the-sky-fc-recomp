@@ -53,7 +53,7 @@ switch)
 *) echo "unknown target $TARGET" >&2; exit 1 ;;
 esac
 
-INC="-I$ROOT/pcrecomp/runtime/recomp32 -I$HLE -I$GEN -I$ROOT/src/portable"
+INC="-I$ROOT/pcrecomp/runtime/recomp32 -I$HLE -I$GEN -I$ROOT/src/portable -I$ROOT/src/mods"
 DEFS="-DRECOMP_RETADDR=0u -DRECOMP_LOCAL_REGS -D_GNU_SOURCE -DHLE_WITH_D3D9"
 
 # One line per source: "<object> <source> <flags>".
@@ -68,7 +68,7 @@ for f in "$HLE"/*.c; do
 done
 # guest C++ exceptions: the one file of native32 that is not Windows' own
 echo "$OUT/obj/eh32.o $ROOT/pcrecomp/runtime/native32/eh32.c -O1 -Wall -Wno-unused-function" >> "$LIST"
-for f in "$ROOT"/src/portable/*.c; do
+for f in "$ROOT"/src/portable/*.c "$ROOT"/src/mods/*.c; do
   echo "$OUT/obj/host_$(basename "$f" .c).o $f -O1 -Wall" >> "$LIST"
 done
 

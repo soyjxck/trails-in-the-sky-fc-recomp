@@ -23,6 +23,14 @@
  *     --trace PREFIX     list every call out whose name starts so (IDirect3D...)
  *     --d3d-log          list render targets, viewports and what is read back
  *     --audio-out FILE   write everything the game's mixer puts out to a WAV file
+ *     --script FILE      play a script of button presses (tests/*.txt)
+ *     --mods DIR         the folder of mods (src/mods/vfs.c); on the Switch, mods
+ *                        beside the program if nothing is said
+ *     --voice-log        say which voice file each voiced line plays
+ *
+ * SoraVoice, if it is installed in the game's folder (voice\scena and
+ * voice\ogg), works as it is: its scripts are loaded and its voices played
+ * (src/portable/voice.c).
  *
  * On the Switch there is no command line: the same options are read from
  * args.txt beside the program, if it is there, and what cannot work (started
@@ -38,6 +46,8 @@
 #include "win32hle.h"
 #include "pe_loader.h"
 #include "host.h"
+#include "mods.h"
+#include <strings.h>
 
 /* On the Switch the game's folder is on the SD card and there is no console
  * to write to: what a run says goes to a file beside it, ending with a line
@@ -260,6 +270,7 @@ static void switch_start(int argc, char** argv) {
 
 extern const uint32_t fc_entry_va;    /* recomp_dispatch.c */
 extern const win32hle_shim fc_win32_wide[];   /* win32_wide.c */
+void fc_voice_init(int log);                  /* voice.c */
 void fc_set_saves_folder(const char* host_dir);
 
 /* ---- what the lift calls into (HOOKS and WRAPS in run_lift.py) -------------
@@ -269,6 +280,92 @@ void fc_orig_004802C0(void);
 void fc_orig_004C11A0(void);
 void fc_orig_00477580(void);
 void fc_orig_00477180(void);
+
+/* ---- a play script (--script FILE) ---------------------------------------------------
+ * The Windows host's, line for line (src/runtime/host.c has the format):
+ * wait MS, hold BUTTON MS, tap BUTTON [times [interval]], shot NAME, log TEXT,
+ * quit. While a script has steps left it answers Input_Poll instead of the
+ * controller. */
+static const struct { const char* name; uint32_t bit; } k_buttons[] = {
+    { "UP", 0x1 }, { "DOWN", 0x2 }, { "RIGHT", 0x4 }, { "LEFT", 0x8 }, { "ESC", 0x10 }, { "SPACE", 0x20 },
+    { "ENTER", 0x40 }, { "CTRL", 0x80 }, { "NUM0", 0x100 }, { "SHIFT", 0x200 }, { "Z", 0x400 }, { "X", 0x800 },
+    { "PGUP", 0x1000 }, { "PGDN", 0x2000 }, { "B", 0x8000 }, { "C", 0x10000 }, { "M", 0x20000 },
+    { "A", 0x400000 }, { "V", 0x800000 },
+};
+enum { STEP_WAIT, STEP_HOLD, STEP_SHOT, STEP_LOG, STEP_QUIT };
+typedef struct { int kind; uint32_t ms, buttons; char text[128]; } step_t;
+#define LONGEST_TAP_MS 250u
+static step_t* g_steps;
+static int g_nsteps, g_step, g_step_entered;
+static uint32_t g_step_started, g_step_started_wall;
+static char g_shot_pending[64];       /* a script's `shot`, taken at the next Present */
+static void wav_close(void);
+
+static uint32_t button_mask(const char* word) {
+    for (size_t i = 0; i < sizeof k_buttons / sizeof k_buttons[0]; i++)
+        if (!strcasecmp(word, k_buttons[i].name)) return k_buttons[i].bit;
+    return (uint32_t)strtoul(word, NULL, 16);
+}
+static void add_step(int kind, uint32_t ms, uint32_t buttons, const char* text) {
+    g_steps = (step_t*)realloc(g_steps, (size_t)(g_nsteps + 1) * sizeof *g_steps);
+    step_t* s = &g_steps[g_nsteps++];
+    s->kind = kind, s->ms = ms, s->buttons = buttons;
+    snprintf(s->text, sizeof s->text, "%s", text);
+}
+static void load_script(const char* path) {
+    FILE* f = fopen(path, "r");
+    char line[256];
+    if (!f) { fprintf(stderr, "[script] cannot open %s\n", path); return; }
+    while (fgets(line, sizeof line, f)) {
+        char verb[16] = "", a[64] = "", rest[128] = "";
+        unsigned n1 = 0, n2 = 0;
+        if (sscanf(line, "%15s", verb) != 1 || verb[0] == '#') continue;
+        if (!strcasecmp(verb, "wait") && sscanf(line, "%*s %u", &n1) == 1) add_step(STEP_WAIT, n1, 0, "");
+        else if (!strcasecmp(verb, "hold") && sscanf(line, "%*s %63s %u", a, &n1) == 2) add_step(STEP_HOLD, n1, button_mask(a), "");
+        else if (!strcasecmp(verb, "tap") && sscanf(line, "%*s %63s %u %u", a, &n1, &n2) >= 1) {
+            unsigned count = n1 ? n1 : 1, interval = n2 > 100 ? n2 : 500;
+            for (unsigned i = 0; i < count; i++) {
+                add_step(STEP_HOLD, 100, button_mask(a), "");
+                add_step(STEP_WAIT, interval - 100, 0, "");
+            }
+        } else if (!strcasecmp(verb, "shot") && sscanf(line, "%*s %47s", a) == 1) add_step(STEP_SHOT, 0, 0, a);
+        else if (!strcasecmp(verb, "log") && sscanf(line, "%*s %127[^\r\n]", rest) == 1) add_step(STEP_LOG, 0, 0, rest);
+        else if (!strcasecmp(verb, "quit")) add_step(STEP_QUIT, 0, 0, "");
+        else fprintf(stderr, "[script] cannot read line: %s", line);
+    }
+    fclose(f);
+    fprintf(stderr, "[script] %d steps from %s\n", g_nsteps, path);
+}
+/* The buttons the script holds right now. Its clock stops while the game
+ * does (a long load), so a wait is a wait of the game's time. */
+static uint32_t scripted_buttons(void) {
+    static uint32_t last_poll, script_ms;
+    uint32_t wall = hle_ticks_ms();
+    if (last_poll) script_ms += wall - last_poll < 34 ? wall - last_poll : 34;
+    last_poll = wall;
+    while (g_step < g_nsteps) {
+        const step_t* s = &g_steps[g_step];
+        if (!g_step_entered) {
+            g_step_entered = 1;
+            g_step_started = script_ms;
+            g_step_started_wall = wall;
+            if (s->kind == STEP_SHOT) snprintf(g_shot_pending, sizeof g_shot_pending, "%s", s->text);
+            if (s->kind == STEP_LOG) fprintf(stderr, "[script] %s\n", s->text);
+            if (s->kind == STEP_QUIT) {
+                fprintf(stderr, "[script] quit\n");
+                wav_close();
+                hle_exit(0);
+            }
+        }
+        int tap = s->kind == STEP_HOLD && s->ms <= LONGEST_TAP_MS;
+        uint32_t elapsed = tap ? wall - g_step_started_wall : script_ms - g_step_started;
+        if (s->kind == STEP_SHOT && g_shot_pending[0]) return 0;     /* a picture is of a finished frame */
+        if (elapsed < s->ms) return s->kind == STEP_HOLD ? s->buttons : 0;
+        g_step++;
+        g_step_entered = 0;
+    }
+    return 0;
+}
 
 /* ---- a controller -----------------------------------------------------------------
  * Input_Poll (0x004802C0) gathers keyboard, mouse and pad into one mask of
@@ -335,6 +432,13 @@ static uint32_t pad_buttons(void) {
 }
 void fc_wrap_004802C0(void) {
     fc_orig_004802C0();
+    if (g_step < g_nsteps) {
+        MEM8(FC_MOUSE_IN_USE) = 0;
+        MEM8(FC_MOUSE_MODE) = 0;
+        g_eax = scripted_buttons();
+        g_edx = 0;
+        return;
+    }
     uint32_t held = pad_buttons();
     if (held) {
         MEM8(FC_MOUSE_IN_USE) = 0;        /* the menus follow the buttons, not a pointer that is not moving */
@@ -343,8 +447,8 @@ void fc_wrap_004802C0(void) {
     }
 }
 void fc_wrap_004C11A0(void) { fc_orig_004C11A0(); }
-void fc_wrap_00477580(void) { fc_orig_00477580(); }
-void fc_wrap_00477180(void) { fc_orig_00477180(); }
+/* ReadDirFiles (0x00477580) and ArchiveReadRaw (0x00477180) are wrapped by the
+ * mod loader, src/mods/vfs.c, the same file as on Windows. */
 
 /* _CxxThrowException (the C runtime is linked into the exe, so a throw is
  * this function): dispatched over the guest's own frames by eh32. */
@@ -381,6 +485,14 @@ static const char* g_shots;
 static unsigned g_shot_every, g_frames, g_frame_now;
 static void on_frame(unsigned frame) {
     g_frame_now = frame;
+    if (g_shot_pending[0]) {
+        if (g_shots) {
+            char path[700];
+            snprintf(path, sizeof path, "%s/%s.png", g_shots, g_shot_pending);
+            fprintf(stderr, "[shots] frame %u -> %s%s\n", frame, path, hle_d3d9_save_png(path) == 0 ? "" : " (not written)");
+        }
+        g_shot_pending[0] = 0;
+    }
     if (g_shots && (frame == 1 || (g_shot_every && frame % g_shot_every == 0))) {
         char path[700];
         snprintf(path, sizeof path, "%s/frame_%06u.png", g_shots, frame);
@@ -460,7 +572,8 @@ static uint32_t resolve_and_count(const char* name) {
 int main(int argc, char** argv) {
     const char* exe = NULL;
     const char* saves = "save";       /* --saves DIR: where the game's Saved Games folder is */
-    int list_only = 0;
+    const char* mods = NULL;
+    int list_only = 0, voice_log = 0;
 #ifdef __SWITCH__
     static char text[2048];
     static char* words[64];
@@ -493,6 +606,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--watch") && i + 1 < argc) g_watch = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--d3d-log")) hle_d3d9_log = 1;
         else if (!strcmp(argv[i], "--audio-out") && i + 1 < argc) wav_open(argv[++i]);
+        else if (!strcmp(argv[i], "--script") && i + 1 < argc) load_script(argv[++i]);
+        else if (!strcmp(argv[i], "--mods") && i + 1 < argc) mods = argv[++i];
+        else if (!strcmp(argv[i], "--voice-log")) voice_log = 1;
         else if (!strcmp(argv[i], "--trace") && i + 1 < argc) setenv("HLE_SHIMTRACE", argv[++i], 1);
         else exe = argv[i];
     }
@@ -500,6 +616,14 @@ int main(int argc, char** argv) {
     if (!exe) exe = g_exe;
 #endif
     if (g_shots) mkdir(g_shots, 0755);
+    /* The game's folder is the working directory (the game counts on it):
+     * SoraVoice's files are looked for there, then the mod folders. */
+    mods_scan_game(".");
+#ifdef __SWITCH__
+    if (!mods) { static char beside[400]; snprintf(beside, sizeof beside, "%s/mods", g_home); mods = beside; }
+#endif
+    if (mods) mods_scan(mods);
+    fc_voice_init(voice_log);
     hle_d3d9_title = "Trails in the Sky FC";
     hle_d3d9_frame_hook = on_frame;
     if (g_watch) {

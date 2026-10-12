@@ -75,9 +75,20 @@ HOOKS = {0x004FD597}
 #               entries (src/mods/vfs.c).
 WRAPS = {0x004802C0, 0x004C11A0, 0x00477580, 0x00477180}
 
-# Fixes to the game itself: C run after the instruction at the address.
-# The lift stays faithful; a patch is for a fix the original cannot have.
-PATCHES = {}
+# Additions to the game itself: C run after the instruction at the address.
+# The lift stays faithful; a patch is for what the original cannot have.
+#
+# Voices (SoraVoice's, which hooks the Windows game at the same places; the
+# hosts define the three functions, src/portable/voice.c):
+#   0x004E191C  the window's text reader has found a '#', the start of a
+#               command, at esi: a voice tag is '#', digits, 'v'.
+#   0x004E2EC4  the typing beep is about to be played: not over a voice.
+#   0x004E2DDD  the click as the player turns the page: the voice stops.
+PATCHES = {
+    0x004E191C: '{ void fc_voice_tag(uint32_t); fc_voice_tag(esi); }',
+    0x004E2EC4: '{ int fc_voice_playing(void); if (fc_voice_playing()) goto L_004E2EE2; }',
+    0x004E2DDD: '{ void fc_voice_page(void); fc_voice_page(); }',
+}
 
 
 def apply_patches(body, patches):

@@ -188,6 +188,12 @@ static void shim_TerminateProcess(void) {
 
 static int g_count_top = 60;      /* --count-natives N: how many of them to list */
 
+/* Voices (PATCHES in run_lift.py): the portable host plays them
+ * (src/portable/voice.c); this one does not yet. */
+void fc_voice_tag(uint32_t at) { (void)at; }
+int fc_voice_playing(void) { return 0; }
+void fc_voice_page(void) {}
+
 static void shim_ExitProcess(void) {
     fprintf(stderr, "\n[exit] ExitProcess(%u) from sub_%08X\n", ARG(0), g_cur_func);
     recomp_trace_flush();

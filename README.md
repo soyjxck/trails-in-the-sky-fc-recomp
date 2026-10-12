@@ -30,8 +30,9 @@ Linux and for the Nintendo Switch (`tools/build_portable.sh`, `src/portable`),
 on a host that answers the Windows calls itself instead of passing them to
 Windows, Direct3D 9 included (on OpenGL ES 3). There the game starts and
 plays, on Linux and on the Switch (under Ryujinx and on a console), with a
-controller and with music. Movies, the keyboard and the mouse are not there
-yet (docs/bringup.md, 13 to 15).
+controller, with music, and with SoraVoice's voices if that mod is installed.
+Movies, the keyboard and the mouse are not there
+yet (docs/bringup.md, 13 to 16).
 
 See [docs/bringup.md](docs/bringup.md) for every wall on the way.
 

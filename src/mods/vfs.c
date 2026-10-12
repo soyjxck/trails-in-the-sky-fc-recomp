@@ -30,12 +30,27 @@
  * `[u16 n + 4][big-endian u16 n | 0x2000][n bytes][u8 more]`. Textures
  * (._DS) and sounds (.WAV) are not packed in the archives either, and are
  * read as they are.
+ *
+ * SoraVoice keeps its voiced scripts in the game's own folder, as
+ * voice\scena\<name>; mods_scan_game takes them from there, before any mod
+ * folder, so the mod works as it was installed.
+ *
+ * The same file serves the Windows host and the portable one: folders are
+ * listed through the C library of whichever it is.
  */
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#define SEP "\\"
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+#define SEP "/"
+#endif
 
 #include "recomp_types.h"
 #include "mods.h"
@@ -47,6 +62,7 @@
 #define OVERRIDE_TAG    0x80000000u
 /* What the game reads an entry into is 6 MB (its staging buffer). */
 #define MAX_PAYLOAD     (6u << 20)
+#define PATH_ROOM       600
 
 void fc_orig_00477580(void);          /* ReadDirFiles */
 void fc_orig_00477180(void);          /* ArchiveReadRaw */
@@ -59,7 +75,7 @@ typedef struct {
     int      raw;                     /* plain data the game does not unpack (._DS, .WAV) */
     uint32_t file_size, payload_size;
     int      mod;
-    char     path[MAX_PATH];
+    char     path[PATH_ROOM];
 } override_t;
 
 static override_t* g_ov;
@@ -67,6 +83,43 @@ static int g_nov, g_cap;
 static char g_mod_names[64][64];
 static int g_nmods;
 static int g_applied, g_unknown;
+
+/* ---- folders, on either kind of host --------------------------------------------- */
+typedef void (*seen_fn)(void* ctx, const char* dir, const char* name, int is_dir, uint32_t size, int too_big);
+static void list_dir(const char* dir, seen_fn seen, void* ctx) {
+#ifdef _WIN32
+    char pattern[PATH_ROOM];
+    WIN32_FIND_DATAA fd;
+    snprintf(pattern, sizeof pattern, "%s\\*", dir);
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        seen(ctx, dir, fd.cFileName, (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0, fd.nFileSizeLow, fd.nFileSizeHigh != 0);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    DIR* d = opendir(dir);
+    struct dirent* e;
+    if (!d) return;
+    while ((e = readdir(d)) != NULL) {
+        char path[PATH_ROOM];
+        struct stat st;
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        if (stat(path, &st) != 0) continue;
+        seen(ctx, dir, e->d_name, S_ISDIR(st.st_mode), (uint32_t)st.st_size, st.st_size > 0x7FFFFFFF);
+    }
+    closedir(d);
+#endif
+}
+static int is_dir(const char* path) {
+#ifdef _WIN32
+    DWORD a = GetFileAttributesA(path);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
 
 /* "h_kao000._ch" or "T0310   ._SN" -> "H_KAO000._CH" / "T0310   ._SN": the
  * base padded to 8, the dot and extension to 4, upper case. */
@@ -87,17 +140,19 @@ static uint32_t stored_size(uint32_t n) {
     return 3 + n + 5 * ((n + 0x1FFE) / 0x1FFF);
 }
 
-static void add_file(int mod, int archive, const char* dir, const WIN32_FIND_DATAA* fd, int packed) {
+typedef struct { int mod, archive, packed; } scan_t;
+static void add_file(void* ctx, const char* dir, const char* name, int is_folder, uint32_t size, int too_big) {
+    const scan_t* sc = (const scan_t*)ctx;
     override_t o;
     memset(&o, 0, sizeof o);
-    if (fd->nFileSizeHigh || !entry_name(fd->cFileName, o.name)) return;
-    o.archive = archive;
-    o.mod = mod;
-    o.packed = packed;
-    o.raw = !packed && (!memcmp(o.name + 8, "._DS", 4) || !memcmp(o.name + 8, ".WAV", 4));
-    o.file_size = fd->nFileSizeLow;
-    o.payload_size = packed || o.raw ? o.file_size : stored_size(o.file_size);
-    _snprintf(o.path, sizeof o.path - 1, "%s\\%s", dir, fd->cFileName);
+    if (is_folder || too_big || !entry_name(name, o.name)) return;
+    o.archive = sc->archive;
+    o.mod = sc->mod;
+    o.packed = sc->packed;
+    o.raw = !sc->packed && (!memcmp(o.name + 8, "._DS", 4) || !memcmp(o.name + 8, ".WAV", 4));
+    o.file_size = size;
+    o.payload_size = sc->packed || o.raw ? o.file_size : stored_size(o.file_size);
+    snprintf(o.path, sizeof o.path, "%s" SEP "%s", dir, name);
     if (o.payload_size > MAX_PAYLOAD) {
         fprintf(stderr, "[mods] %s is too large to load (%u bytes; the game reads an entry into 6 MB): left out\n",
                 o.path, o.file_size);
@@ -111,57 +166,59 @@ static void add_file(int mod, int archive, const char* dir, const WIN32_FIND_DAT
 }
 
 static void scan_archive_folder(int mod, int archive, const char* dir, int packed) {
-    char pattern[MAX_PATH];
-    WIN32_FIND_DATAA fd;
-    _snprintf(pattern, sizeof pattern - 1, "%s\\*", dir);
-    pattern[sizeof pattern - 1] = 0;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) add_file(mod, archive, dir, &fd, packed);
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
+    scan_t sc = { mod, archive, packed };
+    list_dir(dir, add_file, &sc);
 }
 
 /* Every ED6_DTnn folder under `root`. */
 static void scan_archives(int mod, const char* root, int packed) {
     for (int a = 0; a < FC_ARCHIVES; a++) {
-        char dir[MAX_PATH];
-        _snprintf(dir, sizeof dir - 1, "%s\\ED6_DT%02X", root, a);
-        dir[sizeof dir - 1] = 0;
-        if (GetFileAttributesA(dir) != INVALID_FILE_ATTRIBUTES) scan_archive_folder(mod, a, dir, packed);
+        char dir[PATH_ROOM];
+        snprintf(dir, sizeof dir, "%s" SEP "ED6_DT%02X", root, a);
+        if (is_dir(dir)) scan_archive_folder(mod, a, dir, packed);
     }
 }
 
-static int by_name(const void* a, const void* b) { return _stricmp((const char*)a, (const char*)b); }
+static int by_name(const void* a, const void* b) {
+    const unsigned char *x = (const unsigned char*)a, *y = (const unsigned char*)b;
+    for (; *x && tolower(*x) == tolower(*y); x++, y++) {}
+    return tolower(*x) - tolower(*y);
+}
+static void add_mod(void* ctx, const char* dir, const char* name, int is_folder, uint32_t size, int too_big) {
+    (void)ctx, (void)dir, (void)size, (void)too_big;
+    if (is_folder && name[0] != '.' && g_nmods < 64) {
+        strncpy(g_mod_names[g_nmods], name, sizeof g_mod_names[0] - 1);
+        g_nmods++;
+    }
+}
+
+/* The game's own folder, where SoraVoice puts its scripts. */
+void mods_scan_game(const char* game_dir) {
+    char sub[PATH_ROOM];
+    int before = g_nov;
+    snprintf(sub, sizeof sub, "%s" SEP "voice" SEP "scena", game_dir);
+    if (!is_dir(sub) || g_nmods >= 64) return;
+    strcpy(g_mod_names[g_nmods], "the game's voice" SEP "scena");
+    scan_archive_folder(g_nmods, 1, sub, 0);
+    fprintf(stderr, "[mods] %s: %d files\n", g_mod_names[g_nmods], g_nov - before);
+    g_nmods++;
+}
 
 void mods_scan(const char* mods_dir) {
-    char pattern[MAX_PATH];
-    WIN32_FIND_DATAA fd;
-    _snprintf(pattern, sizeof pattern - 1, "%s\\*", mods_dir);
-    pattern[sizeof pattern - 1] = 0;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    do {
-        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != '.' && g_nmods < 64) {
-            strncpy(g_mod_names[g_nmods], fd.cFileName, sizeof g_mod_names[0] - 1);
-            g_nmods++;
-        }
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-    qsort(g_mod_names, (size_t)g_nmods, sizeof g_mod_names[0], by_name);
-    for (int m = 0; m < g_nmods; m++) {
-        char root[MAX_PATH], sub[MAX_PATH];
+    int first = g_nmods;
+    list_dir(mods_dir, add_mod, NULL);
+    qsort(g_mod_names + first, (size_t)(g_nmods - first), sizeof g_mod_names[0], by_name);
+    for (int m = first; m < g_nmods; m++) {
+        char mod_root[PATH_ROOM], sub[PATH_ROOM];
         int before = g_nov;
-        _snprintf(root, sizeof root - 1, "%s\\%s", mods_dir, g_mod_names[m]);
-        root[sizeof root - 1] = 0;
-        scan_archives(m, root, 0);
-        _snprintf(sub, sizeof sub - 1, "%s\\data", root);
+        snprintf(mod_root, sizeof mod_root, "%s" SEP "%s", mods_dir, g_mod_names[m]);
+        scan_archives(m, mod_root, 0);
+        snprintf(sub, sizeof sub, "%s" SEP "data", mod_root);
         scan_archives(m, sub, 0);
-        _snprintf(sub, sizeof sub - 1, "%s\\packed", root);
+        snprintf(sub, sizeof sub, "%s" SEP "packed", mod_root);
         scan_archives(m, sub, 1);
-        _snprintf(sub, sizeof sub - 1, "%s\\voice\\scena", root);
-        if (GetFileAttributesA(sub) != INVALID_FILE_ATTRIBUTES) scan_archive_folder(m, 1, sub, 0);
+        snprintf(sub, sizeof sub, "%s" SEP "voice" SEP "scena", mod_root);
+        if (is_dir(sub)) scan_archive_folder(m, 1, sub, 0);
         fprintf(stderr, "[mods] %s: %d files\n", g_mod_names[m], g_nov - before);
     }
 }
@@ -179,7 +236,7 @@ void fc_wrap_00477580(void) {
         int count = (int)MEM32(FC_DIR_COUNTS + 4 * (uint32_t)o->archive), found = 0;
         for (int k = 0; table && k < count; k++) {
             uint32_t e = table + (uint32_t)k * DIR_ENTRY;
-            if (memcmp((const void*)(uintptr_t)e, o->name, 12)) continue;
+            if (memcmp((const void*)ADDR(e), o->name, 12)) continue;
             MEM32(e + 0x10) = o->payload_size;
             MEM32(e + 0x20) = OVERRIDE_TAG | (uint32_t)i;
             found = 1;
@@ -196,31 +253,30 @@ void fc_wrap_00477580(void) {
 
 /* A file into the buffer, as the game expects that entry to arrive. */
 static int deliver(const override_t* o, uint8_t* dst, uint32_t room) {
-    HANDLE h = CreateFileA(o->path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-    DWORD got = 0;
-    if (h == INVALID_HANDLE_VALUE) return 0;
+    FILE* f = fopen(o->path, "rb");
+    int ok = 1;
+    if (!f) return 0;
     if (o->packed || o->raw) {
-        BOOL ok = ReadFile(h, dst, o->file_size < room ? o->file_size : room, &got, NULL);
-        CloseHandle(h);
-        return ok && got == (o->file_size < room ? o->file_size : room);
-    }
-    if (room < o->payload_size) { CloseHandle(h); return 0; }
-    {   /* stored runs: see the top of this file */
+        uint32_t want = o->file_size < room ? o->file_size : room;
+        ok = fread(dst, 1, want, f) == want;
+    } else if (room < o->payload_size) {
+        ok = 0;
+    } else {                          /* stored runs: see the top of this file */
         uint8_t* p = dst;
         uint32_t left = o->file_size;
         *p++ = 2, *p++ = 0, *p++ = left != 0;
-        while (left) {
+        while (left && ok) {
             uint32_t n = left > 0x1FFF ? 0x1FFF : left;
             *p++ = (uint8_t)(n + 4), *p++ = (uint8_t)((n + 4) >> 8);
             *p++ = (uint8_t)(0x20 | (n >> 8)), *p++ = (uint8_t)n;
-            if (!ReadFile(h, p, n, &got, NULL) || got != n) { CloseHandle(h); return 0; }
+            ok = fread(p, 1, n, f) == n;
             p += n;
             left -= n;
             *p++ = left != 0;
         }
     }
-    CloseHandle(h);
-    return 1;
+    fclose(f);
+    return ok;
 }
 
 /* ArchiveReadRaw, wrapped. ecx = buffer, edx = archive, on the stack the
@@ -234,7 +290,7 @@ void fc_wrap_00477180(void) {
             PUSH32(g_esp, RECOMP_RETADDR);
             sub_004B39E0();
         }
-        if (!deliver(o, (uint8_t*)(uintptr_t)dst, size))
+        if (!deliver(o, (uint8_t*)ADDR(dst), size))
             fprintf(stderr, "[mods] cannot read %s (%u bytes wanted)\n", o->path, size);
         g_eax = 1;
         g_esp += 4;                   /* the return address; the caller pops the two arguments */

@@ -551,3 +551,46 @@ A second copy of the game (a modded one, say) is a second folder on the card
 with the program in it: the program works from the folder it was started
 from. An emulator given the file does not say where that is; there the first
 line of `/switch/trails/home.txt` names the folder to use.
+
+## 16. Voices: SoraVoice without its DLL
+
+SoraVoice gives the game spoken dialogue. On Windows it is a DLL the game is
+made to load (as `dinput8.dll`), which patches the running game in a handful
+of places. A port that runs none of the game's DLLs cannot load it, and does
+not need to: the port can do at those places what the DLL does. With
+SoraVoice installed in the game's folder as its own instructions say
+(`voice\scena`, `voice\ogg`), the portable host now speaks.
+
+Three things make it work:
+
+- **Its scripts.** The voiced lines are in SoraVoice's own copies of the
+  game's scripts, `voice\scena\<name>`, which stand in for the entries of
+  `ED6_DT01`. That is what the mod loader does already (12): `src/mods/vfs.c`
+  now builds for both hosts and takes that folder from the game's own
+  folder before any mod's. 491 scripts.
+- **Where a line is voiced.** In those scripts a voiced line carries a tag in
+  its text: `#`, one to ten digits, a lowercase `v`. The game draws nothing
+  for it. The lift now calls out (`PATCHES` in `run_lift.py`) where the
+  window's text reader meets a `#` (0x004E191C), where it is about to play
+  the typing beep (0x004E2EC4: not over a voice), and where the player's
+  page-turn clicks (0x004E2DDD: the voice stops). Each tag is met once.
+- **Which file.** Ten digits are the file's name, `ch<digits>.ogg`; six are
+  `ed<the last four>.ogg`. Five or fewer are a number into the list of the
+  `ch` files in name order, which the host makes by reading the folder (31,368
+  files; on a thread of its own, at start-up). The file is decoded whole on
+  another thread and handed to the mixer as a clip (`hle_audio_clip_play`,
+  new in win32hle's DirectSound); one voice at a time.
+
+Checked without listening, on Linux: the new-game script on a modded copy of
+the game, with `--voice-log` and `--audio-out`. The opening scene's lines ask
+for `ch0010000001`, `...02`, `...03` and on in order, with the second
+speaker's `ch016...` between them, each once; and the clips decoded by ffmpeg
+are found in the recording where the log says they were played (correlation
+0.77 and 0.75 against a background of 0.009, music and all).
+
+The portable host also has the Windows host's play scripts now (`--script`),
+which is what made that run possible.
+
+Not done: the Windows host's three functions are empty (it has the scripts
+but not the voices); SoraVoice's own settings file (volume, which sounds a
+voice mutes) is not read.
