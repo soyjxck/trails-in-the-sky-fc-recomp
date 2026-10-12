@@ -265,3 +265,34 @@ that is all that has been looked at.
 Start-up has its own cost, not yet dealt with (`--slow-calls 200`): the GOG
 Galaxy SDK's `Init` takes a second to fail, DirectInput's set-up 0.8 s, and
 the game's "is this pad an XInput one" check, a WMI query, 0.7 s.
+
+## 11. Vulkan and Direct3D 12
+
+The game draws through Direct3D 9 and nothing else, so the renderer is a
+question of what answers `Direct3DCreate9`, and that import is the host's
+(`--renderer`, `wrap_d3d9` in `host.c`):
+
+| | |
+|---|---|
+| `d3d9` | Windows' own Direct3D 9 (the default) |
+| `vulkan` | [DXVK](https://github.com/doitsujin/dxvk), Direct3D 9 on Vulkan: its 32-bit `d3d9.dll` in a `dxvk` folder beside the exe |
+| `d3d12` | Direct3D 9 on Direct3D 12, part of Windows 10 and later (`Direct3DCreate9On12`) |
+
+Players have used DXVK with this game for years by putting its `d3d9.dll`
+beside the game's exe. Here it is loaded by path from the port's own folder:
+nothing goes into the game's folder, DXVK's log and shader cache land beside
+the port's exe, and a missing or failing renderer falls back to Direct3D 9
+with a line in the log. D3DX stays the system's in every case, since it only
+talks to the device it is handed.
+
+```
+[renderer] Vulkan (DXVK)                  DXVK v2.6.2, x86
+[d3d9] CreateDevice 1280x720 windowed=1 flags 0x54 -> 0x00000000
+[frames] 17490 frames, 122.8 a second (8.15 ms each)
+
+[renderer] Direct3D 12 (D3D9On12)
+[frames] 17448 frames, 121.8 a second (8.21 ms each)
+```
+
+Both played the title menu and the three-minute save, field and battle
+script to the end, with the picture as under Direct3D 9.

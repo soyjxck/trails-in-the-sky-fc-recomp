@@ -64,6 +64,7 @@ game runs wrong (docs/bringup.md, 8).
 | `--silent` | mute the game (its sound code still runs) |
 | `--shots DIR`, `--shot-every N` | save the back buffer as a PNG every N frames |
 | `--script FILE` | play a script of button presses (`tests/*.txt`; `src/runtime/host.c` has the format) |
+| `--renderer d3d9`, `vulkan`, `d3d12` | what draws: Windows' Direct3D 9, Vulkan (DXVK's 32-bit `d3d9.dll` in a `dxvk` folder beside the exe), or Direct3D 12 |
 | `--fps N` | frames a second: 30, 60, 144... (default 125, the game's own ceiling; 0 = no limit) |
 | `--watchdog S` | report where the game is and stop after S seconds |
 | `--profile FILE` | sample the main thread and write where its time went |

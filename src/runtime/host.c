@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include <d3d9.h>
+#include <d3d9on12.h>
 #include <objbase.h>
 #include <psapi.h>
 #include <mmsystem.h>
@@ -819,12 +820,81 @@ static void fast_imports(void) {
     fprintf(stderr, "[bridge] %d imports and Direct3D keep the machine\n", n);
 }
 
+/* ---- the renderer ---------------------------------------------------------------
+ * The game draws through Direct3D 9 and nothing else, and what stands behind
+ * `Direct3DCreate9` is the host's choice (--renderer):
+ *
+ *   d3d9    Windows' own Direct3D 9.
+ *   vulkan  DXVK, which implements Direct3D 9 on Vulkan: its 32-bit d3d9.dll,
+ *           loaded from the dxvk folder beside this exe. Nothing is put beside
+ *           the game, and no other program sees it.
+ *   d3d12   Direct3D 9 on Direct3D 12, which Windows 10 and later carry
+ *           (Direct3DCreate9On12).
+ *
+ * The game's import of Direct3DCreate9 is a shim that asks the chosen one.
+ * D3DX is the system's in every case: it only ever talks to the device it is
+ * given. A renderer that is not there falls back to Direct3D 9, with a line
+ * in the log saying so. */
+enum { RENDERER_D3D9, RENDERER_VULKAN, RENDERER_D3D12 };
+static const char* const k_renderer_names[] = { "Direct3D 9", "Vulkan (DXVK)", "Direct3D 12 (D3D9On12)" };
+static int g_renderer = RENDERER_D3D9;
+static d3d_create9_t g_create9, g_system_create9;
+static HMODULE g_system_d3d9;
+
+static void* WINAPI create9_on12(UINT sdk) {
+    typedef void* (WINAPI* on12_t)(UINT, D3D9ON12_ARGS*, UINT);
+    on12_t f = g_system_d3d9 ? (on12_t)(void*)GetProcAddress(g_system_d3d9, "Direct3DCreate9On12") : NULL;
+    D3D9ON12_ARGS args = { 0 };
+    args.Enable9On12 = TRUE;
+    return f ? f(sdk, &args, 1) : NULL;
+}
+
+static void shim_Direct3DCreate9(void) {
+    g_eax = (uint32_t)(uintptr_t)g_create9(ARG(0));
+    RET(1);
+}
+
+/* DXVK's d3d9.dll: in the dxvk folder beside the exe, or beside the build
+ * folder in a checkout. Its log and shader cache go beside this exe rather
+ * than into the game's folder, which is the working directory. */
+static HMODULE load_dxvk(void) {
+    char exe[MAX_PATH], path[MAX_PATH];
+    GetModuleFileNameA(NULL, exe, MAX_PATH);
+    char* cut = strrchr(exe, '\\');
+    if (cut) *cut = 0;
+    SetEnvironmentVariableA("DXVK_LOG_PATH", exe);
+    SetEnvironmentVariableA("DXVK_STATE_CACHE_PATH", exe);
+    for (int up = 0; up < 2; up++) {
+        _snprintf(path, sizeof path - 1, "%s\\%sdxvk\\d3d9.dll", exe, up ? "..\\" : "");
+        path[sizeof path - 1] = 0;
+        HMODULE m = LoadLibraryExA(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (m) return m;
+    }
+    return NULL;
+}
+
 static int wrap_d3d9(void) {
-    HMODULE m = LoadLibraryA("d3d9.dll");
-    fast_module(m);
-    d3d_create9_t create = m ? (d3d_create9_t)(void*)GetProcAddress(m, "Direct3DCreate9") : NULL;
-    void* d3d = create ? create(D3D_SDK_VERSION) : NULL;
+    void* d3d = NULL;
+    g_system_d3d9 = LoadLibraryA("d3d9.dll");
+    g_system_create9 = g_system_d3d9 ? (d3d_create9_t)(void*)GetProcAddress(g_system_d3d9, "Direct3DCreate9") : NULL;
+    g_create9 = g_system_create9;
+    if (g_renderer == RENDERER_VULKAN) {
+        HMODULE m = load_dxvk();
+        d3d_create9_t f = m ? (d3d_create9_t)(void*)GetProcAddress(m, "Direct3DCreate9") : NULL;
+        if (f && (d3d = f(D3D_SDK_VERSION)) != NULL) { g_create9 = f; fast_module(m); }
+        else fprintf(stderr, "[renderer] Vulkan was asked for, but %s: using Direct3D 9\n",
+                     m ? "DXVK could not start (no Vulkan driver?)" : "there is no dxvk\\d3d9.dll beside the exe");
+    } else if (g_renderer == RENDERER_D3D12) {
+        if ((d3d = create9_on12(D3D_SDK_VERSION)) != NULL) g_create9 = create9_on12;
+        else fprintf(stderr, "[renderer] Direct3D 12 was asked for, but this Windows has no Direct3D 9 on 12: using Direct3D 9\n");
+    }
+    if (!d3d) {
+        g_renderer = RENDERER_D3D9;
+        d3d = g_create9 ? g_create9(D3D_SDK_VERSION) : NULL;
+    }
     if (!d3d) { fprintf(stderr, "cannot create Direct3D 9\n"); return 1; }
+    fast_module(g_system_d3d9);
+    fprintf(stderr, "[renderer] %s\n", k_renderer_names[g_renderer]);
     patch_slot(d3d, 16, (void*)host_CreateDevice, (void**)&g_real_createdev);
     ((ULONG (WINAPI*)(void*))(*(void***)d3d)[2])(d3d);            /* Release; the vtable stays */
     return 0;
@@ -873,6 +943,7 @@ static native32_shim_t g_shims[] = {
     { "D3DXMatrixTranslation", shim_D3DXMatrixTranslation },
     { "D3DXMatrixScaling", shim_D3DXMatrixScaling },
     { "D3DXMatrixRotationYawPitchRoll", shim_D3DXMatrixRotationYawPitchRoll },
+    { "Direct3DCreate9", shim_Direct3DCreate9 },
     { "GetModuleHandleW", shim_GetModuleHandleW },
     { "GetModuleHandleExW", shim_GetModuleHandleExW },
     { "GetModuleFileNameA", shim_GetModuleFileNameA },
@@ -1042,6 +1113,11 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--unattended")) g_unattended = 1;
         else if (!strcmp(argv[i], "--active")) g_force_active = 1;
         else if (!strcmp(argv[i], "--silent")) g_silent = 1;
+        else if (!strcmp(argv[i], "--renderer") && i + 1 < argc) {
+            const char* r = argv[++i];
+            g_renderer = !_stricmp(r, "vulkan") || !_stricmp(r, "dxvk") ? RENDERER_VULKAN
+                       : !_stricmp(r, "d3d12") || !_stricmp(r, "dx12") ? RENDERER_D3D12 : RENDERER_D3D9;
+        }
         else if (!strcmp(argv[i], "--fps") && i + 1 < argc) g_fps_limit = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1;
         else if (!strcmp(argv[i], "--game") && i + 1 < argc) game = argv[++i];
@@ -1064,6 +1140,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--callbacks")) native32_trace_callbacks = 1;
         else {
             printf("usage: trails [--run] [--game DIR] [--savedir DIR] [--unattended] [--active] [--silent]\n"
+                   "              [--renderer d3d9|vulkan|d3d12]\n"
                    "              [--fps N (0 = no limit; default 125, the game's own)] [--original-limiter]\n"
                    "              [--shots DIR] [--shot-every N] [--script FILE] [--watchdog S]\n"
                    "              [--profile FILE] [--gameargs \"...\"]\n"
