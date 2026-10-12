@@ -28,11 +28,13 @@
 #include <mmsystem.h>
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
+#include <shlobj.h>
 
 #include "native32.h"
 #include "recomp_trace.h"
 #include "profile.h"
 #include "mods.h"
+#include "settings_menu.h"
 
 extern const uint32_t fc_entry_va;    /* recomp_dispatch.c */
 
@@ -51,6 +53,7 @@ static volatile LONG g_presents;      /* frames the game has presented */
 static char g_shots[MAX_PATH];        /* --shots: where frames are saved */
 static HWND g_window;                 /* the game's top-level window */
 static HANDLE g_guest_thread;         /* the thread the game's main function runs on */
+static int   g_input_rest;            /* just out of the settings menu: no button counts until all are let go */
 static void pace_report(void);
 static void frame_times_mark(const char* text);
 static uint64_t thread_cycles(HANDLE thread);
@@ -265,7 +268,7 @@ static void shim_CreateWindowExW(void) {
     /* Created hidden and then shown without activation, so the focus stays where it was. */
     if (h && g_unattended && top && (style & WS_VISIBLE))
         SetWindowPos(h, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    if (h && top) g_window = h;
+    if (h && top) g_window = h, fc_menu_attach(h);
     fprintf(stderr, "[window] CreateWindowExW(%ls) style 0x%08X %dx%d -> %p\n",
             ARG(2) ? (const wchar_t*)(uintptr_t)ARG(2) : L"", style, (int)ARG(6), (int)ARG(7), (void*)h);
     g_eax = (uint32_t)(uintptr_t)h;
@@ -473,6 +476,10 @@ static uint32_t scripted_buttons(void) {
 void fc_orig_004802C0(void);
 void fc_wrap_004802C0(void) {
     fc_orig_004802C0();
+    if (g_input_rest) {                 /* the key that closed the settings menu is not a key for the game */
+        if (g_eax | g_edx) g_eax = g_edx = 0;
+        else g_input_rest = 0;
+    }
     if (g_step < g_nsteps) {
         MEM8(FC_MOUSE_IN_USE) = 0;
         MEM8(FC_MOUSE_MODE) = 0;
@@ -577,6 +584,9 @@ void fc_wrap_004C11A0(void) {
     }
     fc_orig_004C11A0();
 }
+
+int fc_host_fps(void) { return g_fps_limit; }
+void fc_host_set_fps(int fps) { g_fps_limit = fps; }
 
 /* ---- D3DX vector maths, called directly --------------------------------------
  * Half of a frame's calls out of the lifted code are these few functions
@@ -791,6 +801,10 @@ static void save_shot(IDirect3DDevice9* dev, LONG frame, const char* name) {
     fprintf(stderr, "[shots] frame %ld -> %s%s\n", frame, path, FAILED(hr) ? " FAILED" : "");
 }
 
+void fc_host_shot(void* dev, const char* name) {
+    if (g_shots[0]) save_shot((IDirect3DDevice9*)dev, 0, name);
+}
+
 static HRESULT g_last_present_hr;
 
 /* How even the frames are, for the log: the time from each Present to the
@@ -895,6 +909,37 @@ static void pace_report(void) {
             share * g_pace_sum_ms / g_pace_n, 100.0 * share);
 }
 
+/* The settings menu (src/ui/settings_menu.cpp). The game is held here, in
+ * the Present of the frame it has just drawn, for as long as the menu is
+ * open: the menu's frames are presented instead, and the window's messages
+ * are pumped as the game's own loop would pump them (this thread is not in
+ * the machine during Present, so the game's window procedure can run). When
+ * the menu closes the game's clock is put forward by the time it was held,
+ * so that the frame after is an ordinary one and not one that long. */
+static void menu_hold(void* dev, const RECT* src, const RECT* dst, HWND wnd, const void* dirty) {
+    LARGE_INTEGER t0, t1;
+    MSG msg;
+    QueryPerformanceCounter(&t0);
+    fc_menu_open(dev);
+    for (;;) {
+        int quit = 0;
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) { quit = 1; break; }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (quit) { PostQuitMessage((int)msg.wParam); break; }     /* the game's own loop is the one that leaves */
+        if (!fc_menu_frame(dev)) break;
+        if (FAILED(g_real_present(dev, src, dst, wnd, dirty))) break;   /* a lost device is the game's to mend */
+        Sleep(6);
+    }
+    fc_menu_close();
+    QueryPerformanceCounter(&t1);
+    if (MEM8(FC_CLOCK_COUNTER)) *(int64_t*)(uintptr_t)FC_CLOCK_LAST += t1.QuadPart - t0.QuadPart;
+    g_pace_last = t1;
+    g_input_rest = 1;
+}
+
 static HRESULT WINAPI host_Present(void* dev, const RECT* src, const RECT* dst, HWND wnd, const void* dirty) {
     LONG n = InterlockedIncrement(&g_presents);
     if (n == 1) fprintf(stderr, "[d3d9] first Present\n");
@@ -904,6 +949,7 @@ static HRESULT WINAPI host_Present(void* dev, const RECT* src, const RECT* dst, 
         save_shot((IDirect3DDevice9*)dev, n, g_shot_pending);
         g_shot_pending[0] = 0;
     }
+    if (fc_menu_wanted()) menu_hold(dev, src, dst, wnd, dirty);
     HRESULT hr = g_real_present(dev, src, dst, wnd, dirty);
     pace_note();
     if (hr != g_last_present_hr) {       /* a lost device shows here first */
@@ -964,6 +1010,7 @@ static void patch_slot(void* obj, int slot, void* fn, void** real) {
 #define LOST_DEVICE_WAIT_MS (10 * 60 * 1000)
 
 static HRESULT WINAPI host_Reset(void* dev, D3DPRESENT_PARAMETERS* pp) {
+    fc_menu_close();                    /* nothing of the menu's may be on a device that is reset */
     force_windowed(pp, "Reset");
     HRESULT level = IDirect3DDevice9_TestCooperativeLevel((IDirect3DDevice9*)dev);
     if (level == D3DERR_DEVICELOST) {
@@ -1078,6 +1125,54 @@ static HMODULE load_dxvk(void) {
         if (m) return m;
     }
     return NULL;
+}
+
+const char* fc_host_renderer(void) {
+    static const char* const words[] = { "d3d9", "vulkan", "d3d12" };
+    return words[g_renderer];
+}
+int fc_host_has_dxvk(void) {
+    char exe[MAX_PATH], path[MAX_PATH];
+    GetModuleFileNameA(NULL, exe, MAX_PATH);
+    char* cut = strrchr(exe, '\\');
+    if (cut) *cut = 0;
+    for (int up = 0; up < 2; up++) {
+        _snprintf(path, sizeof path - 1, "%s\\%sdxvk\\d3d9.dll", exe, up ? "..\\" : "");
+        path[sizeof path - 1] = 0;
+        if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return 1;
+    }
+    return 0;
+}
+
+/* The port's own settings are in the game's settings file, in a section of
+ * their own, so that there is one file to edit:
+ *
+ *     [Recomp]
+ *     Renderer=d3d9        d3d9, vulkan or d3d12
+ *     Fps=125              frames a second; 0 = no limit
+ *
+ * The game writes its own keys one by one and leaves the section alone. The
+ * settings menu writes it; --renderer and --fps win over it for one run. */
+static int g_renderer_given, g_fps_given;
+
+static void recomp_settings(void) {
+    wchar_t path[MAX_PATH + 40] = L"", text[32] = L"";
+    if (g_savedir[0]) wcsncpy(path, g_savedir, MAX_PATH - 1);
+    else {
+        PWSTR found = NULL;
+        if (SUCCEEDED(SHGetKnownFolderPath(&k_saved_games, 0, NULL, &found)) && found) wcsncpy(path, found, MAX_PATH - 1);
+        CoTaskMemFree(found);
+    }
+    if (!path[0]) return;
+    wcscat(path, L"\\FALCOM\\ED6\\config.ini");
+    fprintf(stderr, "[settings] %ls\n", path);
+    if (!g_renderer_given && GetPrivateProfileStringW(L"Recomp", L"Renderer", L"", text, 32, path))
+        g_renderer = !_wcsicmp(text, L"vulkan") || !_wcsicmp(text, L"dxvk") ? RENDERER_VULKAN
+                   : !_wcsicmp(text, L"d3d12") || !_wcsicmp(text, L"dx12") ? RENDERER_D3D12 : RENDERER_D3D9;
+    if (!g_fps_given) {
+        int fps = (int)GetPrivateProfileIntW(L"Recomp", L"Fps", (INT)-2, path);
+        if (fps >= 0) g_fps_limit = fps;
+    }
 }
 
 static int wrap_d3d9(void) {
@@ -1349,11 +1444,12 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--silent")) g_silent = 1;
         else if (!strcmp(argv[i], "--renderer") && i + 1 < argc) {
             const char* r = argv[++i];
+            g_renderer_given = 1;
             g_renderer = !_stricmp(r, "vulkan") || !_stricmp(r, "dxvk") ? RENDERER_VULKAN
                        : !_stricmp(r, "d3d12") || !_stricmp(r, "dx12") ? RENDERER_D3D12 : RENDERER_D3D9;
         }
-        else if (!strcmp(argv[i], "--fps") && i + 1 < argc) g_fps_limit = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1;
+        else if (!strcmp(argv[i], "--fps") && i + 1 < argc) g_fps_limit = atoi(argv[++i]), g_fps_given = 1;
+        else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1, g_fps_given = 1;
         else if (!strcmp(argv[i], "--game") && i + 1 < argc) game = argv[++i];
         else if (!strcmp(argv[i], "--savedir") && i + 1 < argc) savedir = argv[++i];
         else if (!strcmp(argv[i], "--shots") && i + 1 < argc) GetFullPathNameA(argv[++i], MAX_PATH, g_shots, NULL);
@@ -1472,6 +1568,12 @@ int main(int argc, char** argv) {
     g_cpuid_ecx1 = 0;
     printf("Trails in the Sky FC recomp host\n  lifted functions in dispatch: %u\n", recomp_dispatch_count);
 
+    recomp_settings();
+    {   /* A test's look at the settings menu: TRAILS_MENU_GRAB=<frame> opens it by itself at that frame, saves a
+         * picture of each page (--shots) and closes it; <frame>,set also changes two settings while it is open. */
+        const char* grab = getenv("TRAILS_MENU_GRAB");
+        if (grab && atoi(grab) > 0) fc_menu_grab_after(atoi(grab), strstr(grab, ",set") != NULL);
+    }
     if (wrap_d3d9()) return 1;
     uint32_t span = native32_map(exe_full, FC_IMAGE_BASE);
     if (!span) { fprintf(stderr, "cannot map %s at 0x%08X\n", exe_full, FC_IMAGE_BASE); return 1; }

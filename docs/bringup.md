@@ -711,3 +711,76 @@ Japanese battle voices):
 
 Not heard yet: the voices on Windows (the run is muted; the log shows each
 line's file, length and that DirectSound took it).
+
+## 19. Settings without the launcher
+
+The game's OPTION screen has the sound, the camera and the mini map. The
+resolution, window or full screen, anti-aliasing and the rest of the video
+settings were only ever in its launcher, `Config_DX9.exe`, and the port's
+own two (frame rate, renderer) only on the command line. A port should not
+send its player to another program, or to a command line, to change the
+resolution. Now there is one file to edit and a menu in the game.
+
+**What the game does with its settings.** `config.ini` is read once at
+start-up (0x004B1270), each key into a variable of its own, and written
+back whole as the game leaves (0x004B06A0), from those variables. So a file
+edited while the game runs is overwritten, and a setting changed from
+outside has to be changed in the variable as well. The writer is a table
+for the taking: for every key it formats one variable and writes it under
+one section, 60 of them (`[Video]` from 0x007A8100, `[Sound]` from
+0x007A85B0, `[Control]` from 0x007A85C0), and the file's path is at
+0x007A8600.
+
+What the video keys mean was read from where the game uses them:
+`FullAntiAlias` is a sample count tested against the device's multisample
+mask, `TextureFilter` is 1 nearest, 2 linear, 3 anisotropic (each falling
+back by the device's caps), `ShadowQuality` 0 allocates nothing at start-up
+and 2 runs a pass that 1 does not, `WaitVSync` picks the presentation
+interval. In full screen the game asks for `WidthDX9` by `HeightDX9` as the
+screen mode whatever `ModeDX9` holds, as long as that is not -1; with -1 no
+device is made at all. That was checked without switching the display: an
+unattended run keeps Direct3D windowed and logs what was asked for, and
+1920x1080, 2560x1440 and 3840x2160 were each asked for as set.
+
+**The port's own settings** went into the same file, in a section the game
+does not know and so leaves alone: `[Recomp]`, `Renderer` and `Fps`. The
+host reads it before it makes Direct3D (it works the path out itself: the
+Saved Games folder, or `--savedir`); the command line wins for one run.
+
+**The menu** (`src/ui/settings_menu.cpp`) is Dear ImGui drawn on the game's
+own Direct3D 9 device, so it is the same under all three renderers. F2, or
+both sticks of a pad pressed in, opens it.
+
+- The game is held in the `Present` of the frame it has just drawn
+  (`menu_hold`, host.c). That frame is copied to a texture and stands behind
+  the menu, dimmed; the menu's frames are presented in its place. The
+  window's messages are pumped there as the game's own loop would pump
+  them. This thread is outside the machine during `Present` (11), so the
+  game's window procedure can run from that pump, and the music's thread
+  keeps playing.
+- The window's procedure is the menu's first: with the menu open it takes
+  the keys and the mouse and the game is given neither; closed, everything
+  passes through.
+- Nothing of the menu's is on the device while it is closed: the backend is
+  started when the menu opens and shut down when it closes, and `Reset`
+  closes it first. The game's own handling of a lost device never meets a
+  buffer it did not make.
+- When it closes, the game's clock (0x007C8BB8) is put forward by the time
+  it was held, so the frame after is an ordinary one, and no button counts
+  for the game until all have been let go: the key that closed the menu is
+  not a key for the game.
+- A row sets the game's variable and writes the key, both at once. The
+  frame rate is the host's and changes there and then; everything else the
+  game looks at when it makes its device, at the next start.
+
+Checked unattended, by a hook for tests (`TRAILS_MENU_GRAB=<frame>` opens the
+menu by itself at that frame, saves a picture of each page and closes it;
+`<frame>,set` also changes two settings the way a row does): the three pages
+draw over the title screen with the game's values in them; vertical sync
+and 60 frames a second, set from the menu, are in the file after the game
+has left, and the rest of that run is at 60; a file with `Renderer=vulkan`
+and `Fps=60` starts on Vulkan at 59.4 frames a second, and `--renderer d3d12
+--fps 144` over the same file gives Direct3D 12 at 142.
+
+Not checked yet: the menu worked by hand (F2, the keyboard, a pad, the
+mouse), which needs the window to be the active one.

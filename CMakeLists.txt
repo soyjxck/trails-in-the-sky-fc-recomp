@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.20)
 # The C runtime linked in (/MT): trails.exe runs on a PC without the x86
 # Visual C++ redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-project(trails C)
+project(trails C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
   message(FATAL_ERROR "the host must be 32-bit: use build.cmd (vcvarsall amd64_x86)")
@@ -34,13 +34,20 @@ add_executable(trails
   src/runtime/voice_out.c
   src/mods/vfs.c
   src/mods/voice.c
+  src/ui/settings_menu.cpp
+  third_party/imgui/imgui.cpp
+  third_party/imgui/imgui_draw.cpp
+  third_party/imgui/imgui_tables.cpp
+  third_party/imgui/imgui_widgets.cpp
+  third_party/imgui/backends/imgui_impl_dx9.cpp
+  third_party/imgui/backends/imgui_impl_win32.cpp
   ${PCRECOMP}/runtime/native32/native32.c
   ${PCRECOMP}/runtime/recomp32/image_loader.c
   ${PCRECOMP}/runtime/recomp32/recomp_trace.c
   ${GEN_SOURCES}
 )
 target_include_directories(trails PRIVATE
-  src/runtime src/mods ${GEN_DIR} ${PCRECOMP}/runtime/native32 ${PCRECOMP}/runtime/recomp32)
+  src/runtime src/mods src/ui third_party/imgui ${GEN_DIR} ${PCRECOMP}/runtime/native32 ${PCRECOMP}/runtime/recomp32)
 # RECOMP_RETADDR=0u: a stack imbalance during bring-up leaks a harmless 0, not
 # 0xDEAD0000 into a size argument.
 target_compile_definitions(trails PRIVATE RECOMP_RETADDR=0u _CRT_SECURE_NO_WARNINGS
@@ -61,7 +68,7 @@ set_source_files_properties(${GEN_SOURCES} PROPERTIES COMPILE_OPTIONS "/w;${GEN_
 set_source_files_properties(src/runtime/host.c src/runtime/profile.c src/runtime/voice_out.c
                             src/mods/vfs.c src/mods/voice.c
                             PROPERTIES COMPILE_OPTIONS "/W3")
-target_link_libraries(trails PRIVATE user32 gdi32 kernel32 winmm ole32 dbghelp psapi dsound)
+target_link_libraries(trails PRIVATE user32 gdi32 kernel32 winmm ole32 dbghelp psapi dsound shell32)
 # The exe's own imports are system DLLs and come from the system folder, also
 # when it is run from a folder that holds a mod's dinput8.dll or winmm.dll.
 target_link_options(trails PRIVATE /DEPENDENTLOADFLAG:0x800)

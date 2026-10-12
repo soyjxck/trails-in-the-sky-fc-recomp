@@ -32,7 +32,7 @@ Windows, Direct3D 9 included (on OpenGL ES 3). There the game starts and
 plays, on Linux and on the Switch (under Ryujinx and on a console), with a
 controller, with music, and with SoraVoice's voices if that mod is installed.
 The logo and opening movies play too. The keyboard and the mouse are not
-there yet (docs/bringup.md, 13 to 18).
+there yet (docs/bringup.md, 13 to 19).
 
 See [docs/bringup.md](docs/bringup.md) for every wall on the way.
 
@@ -89,15 +89,34 @@ and passes its own arguments on: `play.cmd --fps 60 --renderer vulkan`.
 
 ### Settings
 
-| | where |
-|---|---|
-| resolution, window or full screen, anti-aliasing, vertical sync | `WidthDX9`, `HeightDX9`, `WindowMode`, `FullAntiAlias`, `WaitVSync` in `%USERPROFILE%\Saved Games\FALCOM\ED6\config.ini`, edited while the game is closed (it writes the file as it leaves) |
-| frames a second | `--fps N` |
-| what draws | `--renderer d3d9`, `vulkan` or `d3d12` |
-| music, sound effects, voices, the camera, the mini map | OPTION on the title screen |
-| the logo and opening movies | `LogoPlayOff` and `OpeningPlayOff` in `config.ini` (0 plays them) |
+**F2** in the game, or both sticks of a pad pressed in, opens the port's
+settings menu over it: resolution, window or full screen, vertical sync,
+anti-aliasing, the renderer, the frame rate, texture filtering, shadows, the
+movies. A change is saved as it is made. The frame rate changes at once;
+the rest take effect the next time the game starts.
 
-With `--savedir DIR` the settings file is `DIR\FALCOM\ED6\config.ini`.
+All of it is in one file, `%USERPROFILE%\Saved Games\FALCOM\ED6\config.ini`
+(with `--savedir DIR`, `DIR\FALCOM\ED6\config.ini`; the log's `[settings]`
+line says where it is). It can be edited by hand while the game is closed:
+the game writes its own keys back as it leaves. The game's launcher
+(`Config_DX9.exe`) is not needed for any of it.
+
+| key | |
+|---|---|
+| `[Video] WidthDX9`, `HeightDX9` | the picture's size: the window's, or the screen mode in full screen |
+| `[Video] WindowMode` | 1 a window, 0 full screen |
+| `[Video] WaitVSync` | 1 waits for the screen before each frame |
+| `[Video] FullAntiAlias` | samples: 0, 2, 4 or 8 |
+| `[Video] TextureFilter` | 1 nearest, 2 linear, 3 anisotropic |
+| `[Video] UseMipmap` | 1 uses mipmaps |
+| `[Video] ShadowQuality` | 0 none, 1 simple, 2 full |
+| `[Video] LogoPlayOff`, `OpeningPlayOff` | 1 skips that movie |
+| `[Recomp] Renderer` | `d3d9`, `vulkan` or `d3d12`: the port's own key |
+| `[Recomp] Fps` | frames a second, 0 = no limit (default 125): the port's own key |
+
+`--renderer` and `--fps` on the command line win over the file for that run.
+Music, sound effects, voices, the camera and the mini map are in the game's
+own OPTION screen.
 
 ### A modded copy of the game
 
@@ -120,6 +139,7 @@ run with all of the above set up; put a `config.ini` and saves for it in
 | `src/runtime/host.c` | the Windows host: the guest's identity, exceptions, test modes, the fault report |
 | `src/portable/`, `tools/build_portable.sh`, `tools/run_portable.sh` | the host for everything else (Linux, the Switch): the Windows calls answered in C; its unattended run |
 | `src/mods/vfs.c`, `tools/archive_diff.py` | mods as loose files, and making one from a whole-archive mod |
+| `src/ui/settings_menu.cpp` | the settings menu (Dear ImGui, in `third_party/imgui`, on the game's own Direct3D device) |
 | `src/mods/voice.c` | SoraVoice's voices, for every host; `src/runtime/voice_out.c` and `src/portable/voice_out.c` read and play the files |
 | `config/function_starts.json` | the function starts the catalog is seeded with |
 | `tests/`, `tools/run_test.ps1` | play scripts and the unattended run that plays them |
