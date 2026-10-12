@@ -22,8 +22,15 @@ battles, at about 100 frames a second, with music and sound effects running.
 Each of those is a scripted, unattended test run that ends with the game
 closing normally (docs/bringup.md, 9).
 
-Not tested yet: playing in a visible window with a real keyboard, mouse or
-pad, whether the sound sounds right, and the logo and opening movies.
+Played by hand in a window with keyboard and sound, and it plays. Not tested
+yet: the logo and opening movies.
+
+**Off Windows: start-up only.** The same lifted C also builds for 64-bit
+Linux and for the Nintendo Switch (`tools/build_portable.sh`, `src/portable`),
+on a host that answers the Windows calls itself instead of passing them to
+Windows. There the game runs its whole start-up, on Linux and on the Switch
+under Ryujinx, as far as asking for Direct3D, which that host does not have
+yet (docs/bringup.md, 13).
 
 See [docs/bringup.md](docs/bringup.md) for every wall on the way.
 
@@ -81,7 +88,9 @@ run with all of the above set up; put a `config.ini` and saves for it in
 | | |
 |---|---|
 | `run_lift.py` | the lift driver: `work/functions.json` -> `src/recomp/gen/` |
-| `src/runtime/host.c` | the host: the guest's identity, exceptions, test modes, the fault report |
+| `src/runtime/host.c` | the Windows host: the guest's identity, exceptions, test modes, the fault report |
+| `src/portable/`, `tools/build_portable.sh` | the host for everything else (Linux, the Switch): the Windows calls answered in C |
+| `src/mods/vfs.c`, `tools/archive_diff.py` | mods as loose files, and making one from a whole-archive mod |
 | `config/function_starts.json` | the function starts the catalog is seeded with |
 | `tests/`, `tools/run_test.ps1` | play scripts and the unattended run that plays them |
 | `pcrecomp/` | the toolkit (submodule) |

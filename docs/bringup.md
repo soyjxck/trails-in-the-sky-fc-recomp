@@ -347,3 +347,72 @@ its opening with the Evolution portraits in the message windows:
 Not done yet: files a mod adds that the archive has no entry for, the voices
 themselves (the scripts only carry the tags), and music and movies, which the
 game opens by path and not through its archives.
+
+## 13. Off Windows: Linux, and the Switch
+
+Everything up to here runs the game's code as lifted C but borrows the real
+Windows for the rest: Direct3D, D3DX, DirectSound, DirectInput, windows,
+files. That host (`src/runtime`, on pcrecomp's `native32`) can only ever be a
+32-bit Windows program. The second host, `src/portable`, is the same lifted C
+on pcrecomp's `win32hle`, where every import is answered by the host's own
+code. On a 64-bit machine the guest's memory is one block and every guest
+address an offset into it, which is what arm64 needs.
+
+`tools/build_portable.sh linux` (in WSL) and `tools/build_portable.sh switch`
+(devkitA64 and libnx) build it. What it took:
+
+- **The lift is portable as it stands.** All 2.03 million lines compile with
+  gcc for x86-64 and for aarch64 with no change to the lifter or the
+  generated C.
+- **C++ exceptions** (`eh32.c`) were written inside the Windows host. They
+  build on their own now, every guest address through `ADDR()`.
+- **CPUID.** With no x86 CPU to ask, the runtime left the registers as they
+  were, and the game's C runtime read its feature bits out of whatever was in
+  them. It now answers as a plain SSE2 CPU.
+- **A newer C runtime.** win32hle grew up on Windows 95-era games and the
+  narrow API; this exe is Visual C++ 2017 and calls the wide one.
+  `src/portable/win32_wide.c` answers 70 imports: most are the wide call
+  forwarded to the narrow one win32hle has, with the strings narrowed into
+  guest memory; the rest are what the runtime asks on its way to `WinMain`.
+- **Steam and Galaxy.** `steam_api.dll` is delay-loaded by a helper in the
+  exe; it is answered with shims that say Steam is not running, and the
+  game's Windows-version test for Galaxy with "too old".
+- **The Switch has no `mmap`,** and a homebrew program cannot reserve address
+  space without committing it, so there the guest lives in one allocated
+  block of 512 MB (`HLE_GUEST_ARENA`), with everything placed low. It also
+  names its storage device inside paths (`sdmc:/switch/...`), which put a
+  colon in the middle of every Windows path made from one and crashed the
+  game's first `CreateDirectory`; the device name is taken off.
+
+Where it gets, on Linux and, as `trails.nro` (38 MB), on the Switch under
+Ryujinx: through the C runtime's start-up, the static constructors,
+`WinMain`, the settings and the save folder, to the engine asking for
+Direct3D, where the game itself says so and leaves:
+
+```
+[pe] /switch/trails/game/ed6_win_DX9.exe mapped at 0x00400000, span 0x1555000
+Trails in the Sky FC, portable host: image at 0x00400000, entry 0x004FBDAA, 7220 lifted functions
+[pe] bound 227 imports, 0 unresolved
+38 imports have no answer yet
+entering 0x004FBDAA
+
+[portable] Direct3D 9 is not implemented in this host yet
+[messagebox] Trails in the Sky - Error: This program requires DirectX9.0c or later.
+Please install the latest DirectX.
+[win32hle] ExitProcess(0)
+```
+
+What stands between that and a picture:
+
+| | |
+|---|---|
+| Direct3D 9 | the device itself: about fifty of its methods, fixed-function drawing and the game's assembled shaders, on OpenGL ES (the Switch's driver) |
+| D3DX, 33 imports | 22 are vector maths; textures from memory (DDS); meshes from X files, with the X file reader (`d3dxof`); the shader assembler |
+| sound | DirectSound is in win32hle; `mmio` (5 imports) for the WAV files, and the Ogg Vorbis DLLs the game loads by name |
+| input | XInput and DirectInput, from SDL's controllers |
+| movies | DirectShow |
+
+Under Ryujinx the first minute of a run is the emulator translating the
+lifted functions as they are first reached, some of them tens of thousands
+of lines each; that cost is the emulator's, not the console's. What the
+console's CPU makes of the game is not measured yet.
