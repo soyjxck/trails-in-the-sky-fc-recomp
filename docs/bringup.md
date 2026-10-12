@@ -416,3 +416,93 @@ Under Ryujinx the first minute of a run is the emulator translating the
 lifted functions as they are first reached, some of them tens of thousands
 of lines each; that cost is the emulator's, not the console's. What the
 console's CPU makes of the game is not measured yet.
+
+## 14. A picture off Windows: Direct3D 9 on OpenGL ES
+
+The title screen now draws on Linux and on the Switch (under Ryujinx, at the
+60 frames a second the emulator shows a docked console). What draws it is in
+the fork, in `runtime/win32hle`: `d3d9.c` (Direct3D as the game sees it),
+`d3d9_gl.c` (that state drawn with OpenGL ES 3), `d3dx9.c` (the D3DX the game
+uses) and `d3d9_vs.c` (vertex shader assembly).
+
+**What the game asks for** was measured on Windows before any of it was
+written, two ways:
+
+- apitrace's Direct3D 9 wrapper, put where the host looks for DXVK's
+  (`build\dxvk\d3d9.dll`, `--renderer vulkan`), records every call of a run.
+  The title and a battle use about 45 of the device's 119 methods: one
+  texture stage, no pixel shaders, pre-transformed and fixed-function
+  vertices, and eleven assembly vertex shaders with nothing in them but
+  `mov`, `add`, `mul`, `mad`, `dp3`, `dp4`, `min`, `max`, `rsq`, `rcp` and the
+  matrix macros. Its listing leaves out calls that only ask a question
+  (`GetDeviceCaps`, `EnumAdapterModes`, `CheckDeviceFormat`), so the census is
+  short of those; and a battle's recording was 9 GB, because the game locks
+  the whole of a 786 KB vertex buffer some 25 times a frame.
+- `--d3dx-dump DIR` (new, in the Windows host) writes what D3DX is handed
+  and hands back. Of the 33 imports a battle uses the 22 of maths, textures
+  from DDS files in memory (never compressed ones), copies between surfaces
+  of the same format, and the shader assembler. The game assembles each
+  shader, has D3DX list the result, and assembles the listing: so the
+  disassembler has to exist too. `D3DXLoadMeshFromXA` is called once, for a
+  file that is not there.
+
+**How it is drawn.** Direct3D's picture has its first row at the top and
+OpenGL's at the bottom. Everything is drawn upside down as OpenGL sees it, so
+row 0 of every framebuffer is the top row and a texture that was drawn into
+samples exactly like one the game filled from memory; only the copy to the
+window turns the picture over. That flip, the half pixel between the two
+APIs' pixel centres and the depth range are the last line of every vertex
+program. Fixed-function processing is a GLSL program written from the state
+a draw is made with, and kept by that state; a vertex shader is its bytecode
+translated to GLSL between the same first and last lines. Vertices the game
+keeps rewriting are sent a draw's worth at a time. Nothing GL owns is made
+until a draw needs it, because the game creates and fills things from more
+than one thread.
+
+**Walls**, in the order they stood:
+
+- Two methods of `IDirect3D9` were in each other's slots, so a call with six
+  arguments was answered as one with seven and the game's next pointer was
+  gone. `HLE_SHIMTRACE=prefix` (new) lists every call out by name.
+- The game asks each new surface for "its texture" (`GetContainer`) to learn
+  whether it has one. Answered with the device, it called the device as a
+  texture.
+- The game draws from two threads, one at a time (a second thread draws
+  while the first loads). A GL context is one thread's at a time: the thread
+  that has it lets it go whenever it stops to wait, when it ends, and when
+  another has asked, and whoever draws next takes it.
+- **The Switch: threads.** The C library there starts every thread at the
+  one priority the console shares a core's time among; the main thread starts
+  above it. Wherever the game polls for another thread's work, that thread
+  never ran. The main thread now takes the same priority.
+- **The Switch: fifty years.** The game takes its first reading of the
+  performance counter as time gone by and counts it off a millisecond at a
+  time. Windows counts from when it was started; the Switch's monotonic clock
+  is the date. win32hle's clocks now count from the process's start.
+- **Ryujinx: reading a picture back.** `glReadPixels` there fills the left
+  quarter of each row and leaves the rest black, for a 4096-wide target and
+  for the 1280-wide picture alike (a row's width in bytes taken for one in
+  pixels, by the look of it). What is on screen is whole. The game draws
+  into each render target it makes and reads it back to see that it worked,
+  so under Ryujinx it concludes that it did not and goes without them; a
+  host's own screenshots are cut the same way there. Whether a console does
+  this is not known.
+
+Test runs: `tools/run_portable.sh` (Linux, no window, PNGs of the picture),
+and the same options on the Switch from `/switch/trails/args.txt`:
+`--frames N`, `--shots DIR --shot-every N`, `--watch S` (where each thread
+is, every S seconds: how the two Switch walls were found), `--trace PREFIX`,
+`--d3d-log`.
+
+What is still missing off Windows:
+
+| | |
+|---|---|
+| input | a controller works, read through SDL and added to what the game's own poll returns (`Input_Poll` is wrapped, as it is for play scripts on Windows); the keyboard, the mouse and DirectInput itself are not there |
+| sound | `mmio` (5 imports) for the WAV files, the Ogg Vorbis DLLs the game loads by name |
+| movies | DirectShow |
+| Direct3D | the stencil buffer, lights beyond the simple cases (nothing has drawn with one yet), meshes from X files, anything past the title screen that has not been reached |
+| the frame limiter, play scripts, the mod loader | the Windows host's: they move over |
+
+And what the console's own CPU and graphics chip make of it is still not
+measured: Ryujinx on a PC says nothing about that.

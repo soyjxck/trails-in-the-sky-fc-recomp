@@ -349,7 +349,6 @@ static void once(const char* what) {
 }
 static void w_XInputGetState(void) { RET(ERROR_DEVICE_NOT_CONNECTED_, 2); }
 static void w_DirectInput8Create(void) { once("DirectInput"); RET(0x80004005u, 5); }
-static void w_Direct3DCreate9(void) { once("Direct3D 9"); RET(0, 1); }
 static void w_DirectXFileCreate(void) { once("the X file reader (d3dxof)"); RET(0x80004005u, 1); }
 
 const win32hle_shim fc_win32_wide[] = {
@@ -397,6 +396,6 @@ const win32hle_shim fc_win32_wide[] = {
     { "SteamAPI_WriteMiniDump", s_zero }, { "SteamInternal_FindOrCreateUserInterface", s_zero },
     { "SteamInternal_ContextInit", s_zero },
     { "XInputGetState", w_XInputGetState }, { "DirectInput8Create", w_DirectInput8Create },
-    { "Direct3DCreate9", w_Direct3DCreate9 }, { "DirectXFileCreate", w_DirectXFileCreate },
+    { "DirectXFileCreate", w_DirectXFileCreate },
     { NULL, NULL }
 };

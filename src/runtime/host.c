@@ -186,12 +186,14 @@ static void shim_TerminateProcess(void) {
     RET(2);
 }
 
+static int g_count_top = 60;      /* --count-natives N: how many of them to list */
+
 static void shim_ExitProcess(void) {
     fprintf(stderr, "\n[exit] ExitProcess(%u) from sub_%08X\n", ARG(0), g_cur_func);
     recomp_trace_flush();
     profile_report();
     pace_report();
-    if (native32_count_natives) native32_dump_counts(60);
+    if (native32_count_natives) native32_dump_counts(g_count_top);
     ExitProcess(ARG(0));
 }
 
@@ -603,6 +605,146 @@ static int d3dx_direct(void) {
            g_d3dx_translation && g_d3dx_scaling && g_d3dx_yaw_pitch_roll;
 }
 
+/* ---- what the game asks of D3DX (--d3dx-dump DIR) ------------------------------
+ * A host without Windows has to answer these itself. With a folder given,
+ * each shader's source, what D3DX assembled from it and the listing D3DX
+ * made of that are written there, and the log says what every picture, copy
+ * between surfaces and mesh the game asks for looks like (each kind once). */
+static const char* g_d3dx_dump;
+static void* d3dx_fn(const char* name) {
+    static HMODULE m;
+    if (!m) m = LoadLibraryA("d3dx9_43.dll");
+    return m ? (void*)GetProcAddress(m, name) : NULL;
+}
+static void d3dx_dump_file(const char* kind, int n, const char* ext, const void* data, size_t len) {
+    char path[MAX_PATH];
+    if (!g_d3dx_dump || !data) return;
+    _snprintf(path, sizeof path - 1, "%s\\%s_%02d.%s", g_d3dx_dump, kind, n, ext);
+    path[sizeof path - 1] = 0;
+    FILE* f = fopen(path, "wb");
+    if (f) { fwrite(data, 1, len, f); fclose(f); }
+}
+/* ID3DXBuffer: GetBufferPointer is its fourth method, GetBufferSize its fifth */
+static void* d3dx_buf_ptr(void* b) { return ((void* (WINAPI*)(void*))(*(void***)b)[3])(b); }
+static DWORD d3dx_buf_len(void* b) { return ((DWORD (WINAPI*)(void*))(*(void***)b)[4])(b); }
+/* 1 the first time a line is seen (up to 256 different lines) */
+static int d3dx_new_kind(const char* line) {
+    static char* seen[256];
+    static int n;
+    for (int i = 0; i < n; i++) if (!strcmp(seen[i], line)) return 0;
+    if (n < 256) seen[n++] = _strdup(line);
+    return 1;
+}
+
+static void shim_D3DXAssembleShader(void) {      /* (source, length, defines, include, flags, &shader, &errors) */
+    typedef HRESULT (WINAPI* fn_t)(const char*, UINT, const void*, void*, DWORD, void**, void**);
+    static int n;
+    HRESULT hr = ((fn_t)d3dx_fn("D3DXAssembleShader"))((const char*)PARG(0), ARG(1), PARG(2), PARG(3), ARG(4),
+                                                        (void**)PARG(5), (void**)PARG(6));
+    if (g_d3dx_dump) {
+        void** out = (void**)PARG(5);
+        d3dx_dump_file("shader", n, "txt", PARG(0), ARG(1));
+        if (SUCCEEDED(hr) && out && *out) d3dx_dump_file("shader", n, "bin", d3dx_buf_ptr(*out), d3dx_buf_len(*out));
+        fprintf(stderr, "[d3dx] AssembleShader #%d: %u bytes, flags 0x%X, defines %p, include %p -> 0x%08lX\n",
+                n, ARG(1), ARG(4), PARG(2), PARG(3), (unsigned long)hr);
+        n++;
+    }
+    g_eax = (uint32_t)hr;
+    RET(7);
+}
+
+static void shim_D3DXDisassembleShader(void) {   /* (tokens, colour, comments, &text) */
+    typedef HRESULT (WINAPI* fn_t)(const DWORD*, BOOL, const char*, void**);
+    static int n;
+    HRESULT hr = ((fn_t)d3dx_fn("D3DXDisassembleShader"))((const DWORD*)PARG(0), (BOOL)ARG(1), (const char*)PARG(2),
+                                                           (void**)PARG(3));
+    if (g_d3dx_dump) {
+        void** out = (void**)PARG(3);
+        if (SUCCEEDED(hr) && out && *out) d3dx_dump_file("listing", n, "txt", d3dx_buf_ptr(*out), d3dx_buf_len(*out));
+        fprintf(stderr, "[d3dx] DisassembleShader #%d: colour %u, comments %p -> 0x%08lX\n", n, ARG(1), PARG(2),
+                (unsigned long)hr);
+        n++;
+    }
+    g_eax = (uint32_t)hr;
+    RET(4);
+}
+
+/* (device, data, size, width, height, mip levels, usage, format, pool, filter, mip filter, colour key, &info,
+ * palette, &texture) */
+static void shim_D3DXCreateTextureFromFileInMemoryEx(void) {
+    typedef HRESULT (WINAPI* fn_t)(void*, const void*, UINT, UINT, UINT, UINT, DWORD, DWORD, DWORD, DWORD, DWORD,
+                                   DWORD, void*, void*, void**);
+    HRESULT hr = ((fn_t)d3dx_fn("D3DXCreateTextureFromFileInMemoryEx"))(
+        PARG(0), PARG(1), ARG(2), ARG(3), ARG(4), ARG(5), ARG(6), ARG(7), ARG(8), ARG(9), ARG(10), ARG(11),
+        PARG(12), PARG(13), (void**)PARG(14));
+    if (g_d3dx_dump) {
+        const unsigned char* d = (const unsigned char*)PARG(1);
+        IDirect3DTexture9** out = (IDirect3DTexture9**)PARG(14);
+        D3DSURFACE_DESC got = { 0 };
+        DWORD levels = 0;
+        char line[400];
+        if (SUCCEEDED(hr) && out && *out) {
+            IDirect3DTexture9_GetLevelDesc(*out, 0, &got);
+            levels = IDirect3DTexture9_GetLevelCount(*out);
+        }
+        _snprintf(line, sizeof line - 1,
+                  "[d3dx] CreateTextureFromFileInMemoryEx: file '%.4s' (header %02X%02X%02X%02X ... %02X%02X%02X%02X at 84), "
+                  "asked %dx%d, %d levels, usage 0x%X, format %u, pool %u, filter 0x%X, mip filter 0x%X, key 0x%08X, "
+                  "info %s, palette %s -> 0x%08lX: %ux%u, %lu levels, format %u",
+                  (const char*)d, d[0], d[1], d[2], d[3], ARG(2) > 88 ? d[84] : 0, ARG(2) > 88 ? d[85] : 0,
+                  ARG(2) > 88 ? d[86] : 0, ARG(2) > 88 ? d[87] : 0, (int)ARG(3), (int)ARG(4), (int)ARG(5), ARG(6),
+                  ARG(7), ARG(8), ARG(9), ARG(10), ARG(11), PARG(12) ? "yes" : "no", PARG(13) ? "yes" : "no",
+                  (unsigned long)hr, got.Width, got.Height, (unsigned long)levels, (unsigned)got.Format);
+        line[sizeof line - 1] = 0;
+        if (d3dx_new_kind(line)) fprintf(stderr, "%s\n", line);
+    }
+    g_eax = (uint32_t)hr;
+    RET(15);
+}
+
+static int d3dx_rect(char* out, size_t n, const RECT* r) {
+    if (!r) return _snprintf(out, n, "all");
+    return _snprintf(out, n, "%ldx%ld", r->right - r->left, r->bottom - r->top);
+}
+
+/* (to, its palette, its rectangle, from, its palette, its rectangle, filter, colour key) */
+static void shim_D3DXLoadSurfaceFromSurface(void) {
+    typedef HRESULT (WINAPI* fn_t)(void*, const void*, const RECT*, void*, const void*, const RECT*, DWORD, DWORD);
+    HRESULT hr = ((fn_t)d3dx_fn("D3DXLoadSurfaceFromSurface"))(PARG(0), PARG(1), (const RECT*)PARG(2), PARG(3),
+                                                                PARG(4), (const RECT*)PARG(5), ARG(6), ARG(7));
+    if (g_d3dx_dump) {
+        D3DSURFACE_DESC to = { 0 }, from = { 0 };
+        char line[400], r1[40], r2[40];
+        if (PARG(0)) IDirect3DSurface9_GetDesc((IDirect3DSurface9*)PARG(0), &to);
+        if (PARG(3)) IDirect3DSurface9_GetDesc((IDirect3DSurface9*)PARG(3), &from);
+        d3dx_rect(r1, sizeof r1, (const RECT*)PARG(2));
+        d3dx_rect(r2, sizeof r2, (const RECT*)PARG(5));
+        _snprintf(line, sizeof line - 1,
+                  "[d3dx] LoadSurfaceFromSurface: to %ux%u format %u usage 0x%lX pool %u (rect %s) from %ux%u format %u "
+                  "usage 0x%lX pool %u (rect %s), filter 0x%X, key 0x%08X, palettes %s -> 0x%08lX",
+                  to.Width, to.Height, (unsigned)to.Format, (unsigned long)to.Usage, (unsigned)to.Pool, r1, from.Width,
+                  from.Height, (unsigned)from.Format, (unsigned long)from.Usage, (unsigned)from.Pool, r2, ARG(6),
+                  ARG(7), PARG(1) || PARG(4) ? "yes" : "no", (unsigned long)hr);
+        line[sizeof line - 1] = 0;
+        if (d3dx_new_kind(line)) fprintf(stderr, "%s\n", line);
+    }
+    g_eax = (uint32_t)hr;
+    RET(8);
+}
+
+/* (file, options, device, &adjacency, &materials, &effects, &how many materials, &mesh) */
+static void shim_D3DXLoadMeshFromXA(void) {
+    typedef HRESULT (WINAPI* fn_t)(const char*, DWORD, void*, void**, void**, void**, DWORD*, void**);
+    HRESULT hr = ((fn_t)d3dx_fn("D3DXLoadMeshFromXA"))((const char*)PARG(0), ARG(1), PARG(2), (void**)PARG(3),
+                                                        (void**)PARG(4), (void**)PARG(5), (DWORD*)PARG(6),
+                                                        (void**)PARG(7));
+    if (g_d3dx_dump)
+        fprintf(stderr, "[d3dx] LoadMeshFromXA '%s', options 0x%X -> 0x%08lX\n", (const char*)PARG(0), ARG(1),
+                (unsigned long)hr);
+    g_eax = (uint32_t)hr;
+    RET(8);
+}
+
 /* ---- Direct3D 9 -------------------------------------------------------------
  * IDirect3D9::CreateDevice (slot 16) and the device's Reset (16) and Present
  * (17) are wrapped by patching the vtables d3d9.dll shares between every
@@ -945,6 +1087,11 @@ static native32_shim_t g_shims[] = {
     { "D3DXMatrixScaling", shim_D3DXMatrixScaling },
     { "D3DXMatrixRotationYawPitchRoll", shim_D3DXMatrixRotationYawPitchRoll },
     { "Direct3DCreate9", shim_Direct3DCreate9 },
+    { "D3DXAssembleShader", shim_D3DXAssembleShader },
+    { "D3DXDisassembleShader", shim_D3DXDisassembleShader },
+    { "D3DXCreateTextureFromFileInMemoryEx", shim_D3DXCreateTextureFromFileInMemoryEx },
+    { "D3DXLoadSurfaceFromSurface", shim_D3DXLoadSurfaceFromSurface },
+    { "D3DXLoadMeshFromXA", shim_D3DXLoadMeshFromXA },
     { "GetModuleHandleW", shim_GetModuleHandleW },
     { "GetModuleHandleExW", shim_GetModuleHandleExW },
     { "GetModuleFileNameA", shim_GetModuleFileNameA },
@@ -1075,7 +1222,7 @@ static DWORD WINAPI watchdog(LPVOID unused) {
     recomp_trace_flush();
     profile_report();
     pace_report();
-    if (native32_count_natives) native32_dump_counts(60);
+    if (native32_count_natives) native32_dump_counts(g_count_top);
     fflush(stderr);
     TerminateProcess(GetCurrentProcess(), 4);
     return 0;
@@ -1138,7 +1285,11 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--probe") && i + 1 < argc && g_nprobe < MAX_PROBES)
             g_probe[g_nprobe++] = strtoul(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--native-trace")) native32_trace_native = 1;
-        else if (!strcmp(argv[i], "--count-natives")) native32_count_natives = 1;
+        else if (!strcmp(argv[i], "--count-natives")) {
+            native32_count_natives = 1;
+            if (i + 1 < argc && atoi(argv[i + 1]) > 0) g_count_top = atoi(argv[++i]);
+        }
+        else if (!strcmp(argv[i], "--d3dx-dump") && i + 1 < argc) g_d3dx_dump = argv[++i];
         else if (!strcmp(argv[i], "--slow-calls") && i + 1 < argc) native32_slow_ms = strtoul(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--callbacks")) native32_trace_callbacks = 1;
         else {
@@ -1147,7 +1298,7 @@ int main(int argc, char** argv) {
                    "              [--fps N (0 = no limit; default 125, the game's own)] [--original-limiter]\n"
                    "              [--shots DIR] [--shot-every N] [--script FILE] [--watchdog S]\n"
                    "              [--profile FILE] [--gameargs \"...\"]\n"
-                   "              [--probe VA] [--native-trace] [--callbacks] [--count-natives]\n"
+                   "              [--probe VA] [--native-trace] [--callbacks] [--count-natives [N]] [--d3dx-dump DIR]\n"
                    "              [--slow-calls MS]\n");
             recomp_trace_help();
             return argv[i][1] == 'h' || argv[i][2] == 'h' ? 0 : 1;

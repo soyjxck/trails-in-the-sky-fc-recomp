@@ -21,7 +21,7 @@ case "$TARGET" in
 linux)
   CC=${CC:-gcc}
   CFLAGS="$(pkg-config --cflags sdl2 SDL2_ttf)"
-  LIBS="$(pkg-config --libs sdl2 SDL2_ttf) -lpthread -lm"
+  LIBS="-rdynamic $(pkg-config --libs sdl2 SDL2_ttf) -lGLESv2 -lEGL -lpthread -lm"
   EXE=$OUT/trails-portable
   ;;
 switch)
@@ -30,14 +30,14 @@ switch)
   ARCH="-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE"
   PKG=$DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-pkg-config
   CFLAGS="$ARCH -D__SWITCH__ -ffunction-sections -I$DEVKITPRO/libnx/include $($PKG --cflags sdl2 SDL2_ttf)"
-  LIBS="-specs=$DEVKITPRO/libnx/switch.specs $ARCH -L$DEVKITPRO/libnx/lib $($PKG --libs --static sdl2 SDL2_ttf) -lnx -lm"
+  LIBS="-specs=$DEVKITPRO/libnx/switch.specs $ARCH -L$DEVKITPRO/libnx/lib $($PKG --libs --static sdl2 SDL2_ttf) -lEGL -lGLESv2 -lglapi -ldrm_nouveau -lnx -lm"
   EXE=$OUT/trails.elf
   ;;
 *) echo "unknown target $TARGET" >&2; exit 1 ;;
 esac
 
 INC="-I$ROOT/pcrecomp/runtime/recomp32 -I$HLE -I$GEN -I$ROOT/src/portable"
-DEFS="-DRECOMP_RETADDR=0u -DRECOMP_LOCAL_REGS -D_GNU_SOURCE"
+DEFS="-DRECOMP_RETADDR=0u -DRECOMP_LOCAL_REGS -D_GNU_SOURCE -DHLE_WITH_D3D9"
 
 # One line per source: "<object> <source> <flags>".
 LIST=$OUT/sources.txt

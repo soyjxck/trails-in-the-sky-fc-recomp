@@ -25,12 +25,13 @@ closing normally (docs/bringup.md, 9).
 Played by hand in a window with keyboard and sound, and it plays. Not tested
 yet: the logo and opening movies.
 
-**Off Windows: start-up only.** The same lifted C also builds for 64-bit
+**Off Windows: the title screen.** The same lifted C also builds for 64-bit
 Linux and for the Nintendo Switch (`tools/build_portable.sh`, `src/portable`),
 on a host that answers the Windows calls itself instead of passing them to
-Windows. There the game runs its whole start-up, on Linux and on the Switch
-under Ryujinx, as far as asking for Direct3D, which that host does not have
-yet (docs/bringup.md, 13).
+Windows, Direct3D 9 included (on OpenGL ES 3). There the game starts and
+draws its title screen, on Linux and on the Switch under Ryujinx, and a
+controller's buttons reach it. Sound, movies, the keyboard and the mouse are
+not there yet (docs/bringup.md, 13 and 14).
 
 See [docs/bringup.md](docs/bringup.md) for every wall on the way.
 
@@ -75,7 +76,8 @@ game runs wrong (docs/bringup.md, 8).
 | `--fps N` | frames a second: 30, 60, 144... (default 125, the game's own ceiling; 0 = no limit) |
 | `--watchdog S` | report where the game is and stop after S seconds |
 | `--profile FILE` | sample the main thread and write where its time went |
-| `--count-natives`, `--slow-calls MS` | what the game calls outside its own code, and which calls are slow |
+| `--count-natives [N]`, `--slow-calls MS` | what the game calls outside its own code (the N most called), and which calls are slow |
+| `--d3dx-dump DIR` | what the game asks of D3DX: shader sources and what was assembled from them, written to DIR; pictures, surface copies and meshes, listed in the log |
 | `--calltrace FILE`, `--watch VA`, ... | pcrecomp's bring-up instruments (`trails.exe --help`) |
 
 `play.cmd` is `build\trails.exe --run` with the log kept in `run\play.log`.
@@ -89,7 +91,7 @@ run with all of the above set up; put a `config.ini` and saves for it in
 |---|---|
 | `run_lift.py` | the lift driver: `work/functions.json` -> `src/recomp/gen/` |
 | `src/runtime/host.c` | the Windows host: the guest's identity, exceptions, test modes, the fault report |
-| `src/portable/`, `tools/build_portable.sh` | the host for everything else (Linux, the Switch): the Windows calls answered in C |
+| `src/portable/`, `tools/build_portable.sh`, `tools/run_portable.sh` | the host for everything else (Linux, the Switch): the Windows calls answered in C; its unattended run |
 | `src/mods/vfs.c`, `tools/archive_diff.py` | mods as loose files, and making one from a whole-archive mod |
 | `config/function_starts.json` | the function starts the catalog is seeded with |
 | `tests/`, `tools/run_test.ps1` | play scripts and the unattended run that plays them |
