@@ -597,8 +597,8 @@ voice mutes) is not read.
 
 ## 17. Movies
 
-The logo movie plays on Linux; the Switch build has the same player and has
-not been watched yet.
+The logo movie plays on Linux and in the Switch build under Ryujinx (the
+Evolution mod's 1080p file there: 1,539 frames shown, 30 dropped).
 
 The game plays its movies through DirectShow's multimedia streaming
 (`CLSID_AMMultiMediaStream`): a filter graph decodes the file, the game copies
@@ -627,6 +627,11 @@ goes through:
   is wrapped too, and while the game is inside it after the host has played
   the movie, `Input_Poll` answers with the confirm button: the game leaves the
   loop the way it does when a player skips.
+- **The picture is drawn, not copied.** The first version filled a texture
+  with the frame and copied it into the back buffer with `glBlitFramebuffer`.
+  Linux showed it; under Ryujinx the screen stayed black for the whole movie
+  while the log counted every frame as shown. The frame is now a texture on a
+  rectangle, the way every texture of the game's reaches the screen.
 
 The files: the plain game's logo is MPEG-1 with MP2 sound and its opening
 XviD at 1920 by 960 with PCM; the Evolution mod's are H.264 at 1080p. ffmpeg
@@ -634,6 +639,7 @@ decodes all of them. On the Switch it is devkitPro's `switch-ffmpeg`;
 `tools/build_portable.sh` takes `FFMPEG_CFLAGS` and `FFMPEG_LIBS`, and a build
 without them skips the movies and says so.
 
-Not known yet: whether the console decodes 1080p fast enough (three decoder
-threads, frames that are late by more than an eighth of a second dropped);
+Not known yet: whether the console itself decodes 1080p fast enough (three
+decoder threads, frames that are late by more than an eighth of a second
+dropped; an emulator on a desktop processor says nothing about that);
 movies played from scripts later in the game have not been reached.
