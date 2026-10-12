@@ -33,7 +33,7 @@ plays, on Linux and on the Switch (under Ryujinx and on a console), with a
 controller, with music, and with SoraVoice's voices if that mod is installed.
 The logo and opening movies play too. The game's pointer shows only while a
 pointer is used: a mouse, or the Switch's touch screen (touch a menu item to
-choose it). The keyboard is not there yet (docs/bringup.md, 13 to 20).
+choose it). The keyboard is not there yet (docs/bringup.md, 13 to 21).
 
 See [docs/bringup.md](docs/bringup.md) for every wall on the way.
 
@@ -91,10 +91,11 @@ and passes its own arguments on: `play.cmd --fps 60 --renderer vulkan`.
 ### Settings
 
 **F2** in the game, or both sticks of a pad pressed in, opens the port's
-settings menu over it: resolution, window or full screen, vertical sync,
-anti-aliasing, the renderer, the frame rate, texture filtering, shadows, the
-movies. A change is saved as it is made. The frame rate changes at once;
-the rest take effect the next time the game starts.
+settings menu over it: resolution; a window, a borderless window or full
+screen; vertical sync, anti-aliasing, the renderer, the frame rate, texture
+filtering, shadows, the mouse on or off, the movies. A change is saved as it
+is made. The frame rate and the mouse change at once; the rest take effect
+the next time the game starts.
 
 All of it is in one file, `%USERPROFILE%\Saved Games\FALCOM\ED6\config.ini`
 (with `--savedir DIR`, `DIR\FALCOM\ED6\config.ini`; the log's `[settings]`
@@ -114,6 +115,8 @@ the game writes its own keys back as it leaves. The game's launcher
 | `[Video] LogoPlayOff`, `OpeningPlayOff` | 1 skips that movie |
 | `[Recomp] Renderer` | `d3d9`, `vulkan` or `d3d12`: the port's own key |
 | `[Recomp] Fps` | frames a second, 0 = no limit (default 125): the port's own key |
+| `[Recomp] Borderless` | 1, with `WindowMode=1`: a window without a frame that covers the screen, the picture stretched to it |
+| `[Recomp] Mouse` | 0: no pointer, and the mouse does nothing in the game (for a pad or the keyboard alone) |
 
 `--renderer` and `--fps` on the command line win over the file for that run.
 Music, sound effects, voices, the camera and the mini map are in the game's

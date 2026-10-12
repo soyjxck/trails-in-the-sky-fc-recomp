@@ -29,6 +29,7 @@
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
 #include <shlobj.h>
+#include <dwmapi.h>
 
 #include "native32.h"
 #include "recomp_trace.h"
@@ -54,6 +55,10 @@ static char g_shots[MAX_PATH];        /* --shots: where frames are saved */
 static HWND g_window;                 /* the game's top-level window */
 static HANDLE g_guest_thread;         /* the thread the game's main function runs on */
 static int   g_input_rest;            /* just out of the settings menu: no button counts until all are let go */
+static int   g_borderless;            /* [Recomp] Borderless: the window has no frame and covers its screen */
+static int   g_mouse_off;             /* [Recomp] Mouse=0: the game has no pointer and no mouse */
+static int   g_back_w, g_back_h;      /* the back buffer's size, as the device was last made or reset */
+static int   g_window_vsync;          /* vertical sync in a window: Present is followed by a wait for the desktop */
 static void pace_report(void);
 static void frame_times_mark(const char* text);
 static uint64_t thread_cycles(HANDLE thread);
@@ -252,17 +257,40 @@ static void shim_CreateMutexW(void) {
 #define OFF_SCREEN (-20000)
 static POINT g_pointer = { OFF_SCREEN + 640, OFF_SCREEN + 360 };
 
+/* A borderless window: the game is in its window mode, and the window is the
+ * host's business. It has no frame and covers the screen it is on, whatever
+ * size the game asks for; the game's picture, of the size the settings say,
+ * is stretched to it by Present (to the largest rectangle of its own shape,
+ * when the screen's shape is another). Alt+Tab is then an ordinary change of
+ * window: no display mode to switch, no device to lose. */
+#define BORDERLESS_STYLE (WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS)
+static int borderless(void) { return g_borderless && !g_unattended; }
+static RECT screen_rect(void) {
+    MONITORINFO mi = { sizeof mi };
+    POINT origin = { 0, 0 };
+    HMONITOR m = g_window ? MonitorFromWindow(g_window, MONITOR_DEFAULTTOPRIMARY) : MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+    RECT r = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    if (m && GetMonitorInfoW(m, &mi)) r = mi.rcMonitor;
+    return r;
+}
+
 static void shim_CreateWindowExW(void) {
     uint32_t ex = ARG(0), style = ARG(3);
     HWND parent = (HWND)(uintptr_t)ARG(8);
     int top = !parent && !(style & WS_CHILD);
-    int x = (int)ARG(4), y = (int)ARG(5);
+    int x = (int)ARG(4), y = (int)ARG(5), w = (int)ARG(6), h_ = (int)ARG(7);
     if (g_unattended && top) {
         ex |= WS_EX_NOACTIVATE;
         x = y = OFF_SCREEN;
     }
+    if (borderless() && top) {
+        RECT r = screen_rect();
+        style = BORDERLESS_STYLE | (style & WS_VISIBLE);
+        ex &= ~(uint32_t)(WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME | WS_EX_STATICEDGE);
+        x = r.left, y = r.top, w = r.right - r.left, h_ = r.bottom - r.top;
+    }
     HWND h = CreateWindowExW(ex, (LPCWSTR)(uintptr_t)ARG(1), (LPCWSTR)(uintptr_t)ARG(2),
-                             g_unattended && top ? style & ~WS_VISIBLE : style, x, y, (int)ARG(6), (int)ARG(7),
+                             g_unattended && top ? style & ~WS_VISIBLE : style, x, y, w, h_,
                              parent, (HMENU)(uintptr_t)ARG(9), (HINSTANCE)(uintptr_t)ARG(10),
                              (LPVOID)(uintptr_t)ARG(11));
     /* Created hidden and then shown without activation, so the focus stays where it was. */
@@ -277,29 +305,50 @@ static void shim_CreateWindowExW(void) {
 
 static void shim_SetWindowPos(void) {
     HWND w = (HWND)(uintptr_t)ARG(0), after = (HWND)(uintptr_t)ARG(1);
-    int x = (int)ARG(2), y = (int)ARG(3);
+    int x = (int)ARG(2), y = (int)ARG(3), cx = (int)ARG(4), cy = (int)ARG(5);
     UINT flags = ARG(6);
     if (g_unattended && GetAncestor(w, GA_ROOT) == w) {
         after = HWND_BOTTOM;
         x = y = OFF_SCREEN;
         flags |= SWP_NOACTIVATE | SWP_NOZORDER;
     }
-    g_eax = SetWindowPos(w, after, x, y, (int)ARG(4), (int)ARG(5), flags);
+    if (borderless() && w == g_window) {            /* wherever and however large the game wants it: its screen */
+        RECT r = screen_rect();
+        x = r.left, y = r.top, cx = r.right - r.left, cy = r.bottom - r.top;
+        flags &= ~(UINT)(SWP_NOMOVE | SWP_NOSIZE);
+    }
+    g_eax = SetWindowPos(w, after, x, y, cx, cy, flags);
     fprintf(stderr, "[window] SetWindowPos(%d, %d, %dx%d, flags 0x%X) from sub_%08X\n", (int)ARG(2), (int)ARG(3),
             (int)ARG(4), (int)ARG(5), ARG(6), g_cur_func);
     RET(7);
 }
 
+/* With the mouse switched off (the settings menu, [Recomp] Mouse=0) the
+ * pointer is the private one too: the game glides it about as it likes and
+ * the real one stays where the player left it. */
 static void shim_SetCursorPos(void) {
-    if (g_unattended) { g_pointer.x = (int)ARG(0); g_pointer.y = (int)ARG(1); g_eax = 1; }
+    if (g_unattended || g_mouse_off) { g_pointer.x = (int)ARG(0); g_pointer.y = (int)ARG(1); g_eax = 1; }
     else g_eax = SetCursorPos((int)ARG(0), (int)ARG(1));
     RET(2);
 }
 
 static void shim_GetCursorPos(void) {
-    if (g_unattended) { *(POINT*)(uintptr_t)ARG(0) = g_pointer; g_eax = 1; }
+    if (g_unattended || g_mouse_off) { *(POINT*)(uintptr_t)ARG(0) = g_pointer; g_eax = 1; }
     else g_eax = GetCursorPos((POINT*)(uintptr_t)ARG(0));
     RET(1);
+}
+
+/* The game sets its window's style itself when it changes between a window
+ * and full screen. A borderless window keeps the style the host gave it. */
+static void shim_SetWindowLongW(void) {
+    HWND w = (HWND)(uintptr_t)ARG(0);
+    int index = (int)ARG(1);
+    LONG value = (LONG)ARG(2);
+    if (borderless() && w == g_window && index == GWL_STYLE) value = (LONG)(BORDERLESS_STYLE | ((DWORD)value & WS_VISIBLE));
+    if (borderless() && w == g_window && index == GWL_EXSTYLE)
+        value &= ~(LONG)(WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME | WS_EX_STATICEDGE);
+    g_eax = (uint32_t)SetWindowLongW(w, index, value);
+    RET(3);
 }
 
 static void shim_SetForegroundWindow(void) {
@@ -474,8 +523,40 @@ static uint32_t scripted_buttons(void) {
  * position it records must be kept up: the menus move the pointer to the
  * selected item themselves and take the item under it as the selection. */
 void fc_orig_004802C0(void);
+/* The mouse switched off. The poll reads the mouse's buttons from its
+ * DirectInput device when it has one (0x0079B1A4) and otherwise from what
+ * the window procedure noted of the button messages; its place is always
+ * GetCursorPos. So for the length of the poll the device is not there, the
+ * window is not given the messages (settings_menu.cpp, which has the
+ * window's procedure first), GetCursorPos answers with the private pointer,
+ * and afterwards the game is with the buttons, whatever it concluded. The
+ * device is let go once, so that Windows has its pointer back. */
+#define FC_MOUSE_DEVICE 0x0079B1A4u   /* IDirectInputDevice8*: the mouse, or null */
+static int g_mouse_let_go;
+
+int fc_host_mouse(void) { return !g_mouse_off; }
+void fc_host_set_mouse(int on) {
+    if (!on && !g_mouse_off) GetCursorPos(&g_pointer);      /* the private pointer starts where the real one is */
+    g_mouse_off = !on, g_mouse_let_go = 0;
+}
+
 void fc_wrap_004802C0(void) {
+    uint32_t mouse = 0;
+    if (g_mouse_off) {
+        mouse = MEM32(FC_MOUSE_DEVICE);
+        if (mouse && !g_mouse_let_go) {
+            void* device = (void*)(uintptr_t)mouse;
+            ((HRESULT (WINAPI*)(void*))(*(void***)device)[8])(device);      /* Unacquire */
+            g_mouse_let_go = 1;
+        }
+        MEM32(FC_MOUSE_DEVICE) = 0;
+    }
     fc_orig_004802C0();
+    if (g_mouse_off) {
+        MEM32(FC_MOUSE_DEVICE) = mouse;
+        MEM8(FC_MOUSE_IN_USE) = 0;
+        MEM8(FC_MOUSE_MODE) = 0;
+    }
     if (g_input_rest) {                 /* the key that closed the settings menu is not a key for the game */
         if (g_eax | g_edx) g_eax = g_edx = 0;
         else g_input_rest = 0;
@@ -951,8 +1032,35 @@ static HRESULT WINAPI host_Present(void* dev, const RECT* src, const RECT* dst, 
         save_shot((IDirect3DDevice9*)dev, n, g_shot_pending);
         g_shot_pending[0] = 0;
     }
+    RECT fit;
+    if (borderless() && !dst && g_back_w > 0 && g_back_h > 0 && g_window) {
+        /* The screen's shape is not always the picture's: the largest rectangle of the picture's shape, in the middle. */
+        RECT c;
+        GetClientRect(g_window, &c);
+        int w = c.right, h = (int)((int64_t)c.right * g_back_h / g_back_w);
+        if (h > c.bottom) h = c.bottom, w = (int)((int64_t)c.bottom * g_back_w / g_back_h);
+        if (w > 0 && h > 0 && (w < c.right - 1 || h < c.bottom - 1)) {
+            fit.left = (c.right - w) / 2, fit.top = (c.bottom - h) / 2, fit.right = fit.left + w, fit.bottom = fit.top + h;
+            dst = &fit;
+            /* What the picture does not cover is black. Painted here now and then, and not by a black brush
+             * for the window's class: the game never validates its window, so Windows kept erasing it with that
+             * brush, over the picture, and a borderless window was a black screen. */
+            if (n % 120 == 1) {
+                HDC dc = GetDC(g_window);
+                RECT a = c, b = c;
+                if (fit.left > 0) a.right = fit.left, b.left = fit.right;
+                else a.bottom = fit.top, b.top = fit.bottom;
+                if (dc) {
+                    FillRect(dc, &a, (HBRUSH)GetStockObject(BLACK_BRUSH));
+                    FillRect(dc, &b, (HBRUSH)GetStockObject(BLACK_BRUSH));
+                    ReleaseDC(g_window, dc);
+                }
+            }
+        }
+    }
     if (fc_menu_wanted()) menu_hold(dev, src, dst, wnd, dirty);
     HRESULT hr = g_real_present(dev, src, dst, wnd, dirty);
+    if (g_window_vsync && SUCCEEDED(hr)) DwmFlush();
     pace_note();
     if (hr != g_last_present_hr) {       /* a lost device shows here first */
         fprintf(stderr, "[d3d9] Present %ld at %lu ms -> 0x%08lX\n", n, GetTickCount() - g_t0, (unsigned long)hr);
@@ -985,6 +1093,22 @@ static DWORD WINAPI desktop_watch(LPVOID unused) {
     }
 }
 
+/* Vertical sync in a window. Direct3D 9 (and Direct3D 9 on 12) asked to wait
+ * for the screen while drawing into a window held every frame for 31 ms on
+ * the machine this was measured on, a 120 Hz one: 32 frames a second, in a
+ * window and in a borderless one alike, where the same setting in full
+ * screen gave 120. DXVK does it properly by itself. For the other two the
+ * device is made without the wait, and Present is followed by a wait for the
+ * desktop's next composition (DwmFlush), which is the screen's own beat and
+ * tears as little. */
+static void window_vsync(D3DPRESENT_PARAMETERS* pp) {
+    g_window_vsync = 0;
+    if (!pp || !pp->Windowed || !strcmp(fc_host_renderer(), "vulkan")) return;
+    if (pp->PresentationInterval == D3DPRESENT_INTERVAL_IMMEDIATE) return;
+    pp->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
+    g_window_vsync = 1;
+}
+
 static void force_windowed(D3DPRESENT_PARAMETERS* pp, const char* what) {
     if (g_unattended && pp && !pp->Windowed) {
         fprintf(stderr, "[d3d9] %s asked for %ux%u fullscreen: windowed instead (unattended)\n", what,
@@ -1008,22 +1132,44 @@ static void patch_slot(void* obj, int slot, void* fn, void** real) {
  * window had been closed (Device_CheckLost, 0x00460740). But a lost device
  * cannot be reset until Windows says so (D3DERR_DEVICENOTRESET), which after
  * a locked screen, a UAC prompt or a display mode switch is some time later:
- * the game was gone by then. The wait the original does not have is here. */
-#define LOST_DEVICE_WAIT_MS (10 * 60 * 1000)
-
+ * the game was gone by then. The wait the original does not have is here.
+ *
+ * The window's messages are pumped while it waits. A game in full screen
+ * that the player has switched away from (Alt+Tab) gets its device back only
+ * when its window is the active one again, and a window whose thread does
+ * not answer cannot be made that: the first version slept here for ten
+ * minutes with the window dead and the game then left. There is no limit
+ * now: the wait ends when the device can be reset, or when the game is
+ * closed. The game's clock is put forward by the time waited. */
 static HRESULT WINAPI host_Reset(void* dev, D3DPRESENT_PARAMETERS* pp) {
     fc_menu_close();                    /* nothing of the menu's may be on a device that is reset */
     force_windowed(pp, "Reset");
     HRESULT level = IDirect3DDevice9_TestCooperativeLevel((IDirect3DDevice9*)dev);
     if (level == D3DERR_DEVICELOST) {
-        DWORD since = GetTickCount();
+        LARGE_INTEGER t0, t1;
+        MSG msg;
+        int quit = 0;
+        QueryPerformanceCounter(&t0);
         fprintf(stderr, "[d3d9] the device is lost and cannot be reset yet: waiting\n");
-        while (level == D3DERR_DEVICELOST && GetTickCount() - since < LOST_DEVICE_WAIT_MS) {
-            Sleep(50);
+        while (level == D3DERR_DEVICELOST && !quit) {
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) { quit = 1; break; }
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            if (quit) { PostQuitMessage((int)msg.wParam); break; }      /* the game's own loop is the one that leaves */
+            Sleep(30);
             level = IDirect3DDevice9_TestCooperativeLevel((IDirect3DDevice9*)dev);
         }
+        QueryPerformanceCounter(&t1);
+        fprintf(stderr, "[d3d9] waited %.1f s for the device\n", (double)(t1.QuadPart - t0.QuadPart) / (double)g_qpc_freq.QuadPart);
+        if (MEM8(FC_CLOCK_COUNTER)) *(int64_t*)(uintptr_t)FC_CLOCK_LAST += t1.QuadPart - t0.QuadPart;
+        g_pace_last = t1;
+        g_input_rest = 1;
     }
+    window_vsync(pp);
     HRESULT hr = g_real_reset(dev, pp);
+    if (SUCCEEDED(hr) && pp) g_back_w = (int)pp->BackBufferWidth, g_back_h = (int)pp->BackBufferHeight;
     fprintf(stderr, "[d3d9] Reset %ux%u windowed=%d at %lu ms (cooperative level 0x%08lX) -> 0x%08lX\n",
             pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0, pp ? pp->Windowed : -1,
             GetTickCount() - g_t0, (unsigned long)level, (unsigned long)hr);
@@ -1033,10 +1179,13 @@ static HRESULT WINAPI host_Reset(void* dev, D3DPRESENT_PARAMETERS* pp) {
 static HRESULT WINAPI host_CreateDevice(void* d3d, UINT adapter, DWORD type, HWND focus, DWORD flags,
                                         D3DPRESENT_PARAMETERS* pp, void** out) {
     force_windowed(pp, "CreateDevice");
+    window_vsync(pp);
     HRESULT hr = g_real_createdev(d3d, adapter, type, focus, flags, pp, out);
+    if (g_window_vsync) fprintf(stderr, "[d3d9] vertical sync in a window: by the desktop's composition\n");
     fprintf(stderr, "[d3d9] CreateDevice %ux%u windowed=%d flags 0x%lX -> 0x%08lX\n",
             pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0, pp ? pp->Windowed : -1,
             (unsigned long)flags, (unsigned long)hr);
+    if (SUCCEEDED(hr) && pp) g_back_w = (int)pp->BackBufferWidth, g_back_h = (int)pp->BackBufferHeight;
     if (SUCCEEDED(hr) && out && *out) {
         patch_slot(*out, 16, (void*)host_Reset, (void**)&g_real_reset);
         patch_slot(*out, 17, (void*)host_Present, (void**)&g_real_present);
@@ -1152,6 +1301,8 @@ int fc_host_has_dxvk(void) {
  *     [Recomp]
  *     Renderer=d3d9        d3d9, vulkan or d3d12
  *     Fps=125              frames a second; 0 = no limit
+ *     Borderless=0         1: with WindowMode=1, a window without a frame that covers the screen
+ *     Mouse=1              0: no pointer, and the mouse does nothing in the game
  *
  * The game writes its own keys one by one and leaves the section alone. The
  * settings menu writes it; --renderer and --fps win over it for one run. */
@@ -1175,6 +1326,10 @@ static void recomp_settings(void) {
         int fps = (int)GetPrivateProfileIntW(L"Recomp", L"Fps", (INT)-2, path);
         if (fps >= 0) g_fps_limit = fps;
     }
+    g_borderless = GetPrivateProfileIntW(L"Recomp", L"Borderless", 0, path) != 0;
+    g_mouse_off = GetPrivateProfileIntW(L"Recomp", L"Mouse", 1, path) == 0;
+    if (g_borderless) fprintf(stderr, "[settings] a borderless window\n");
+    if (g_mouse_off) fprintf(stderr, "[settings] the mouse is off\n");
 }
 
 static int wrap_d3d9(void) {
@@ -1270,6 +1425,7 @@ static native32_shim_t g_shims[] = {
     { "CreateWindowExW", shim_CreateWindowExW },
     { "SetWindowPos", shim_SetWindowPos },
     { "SetCursorPos", shim_SetCursorPos },
+    { "SetWindowLongW", shim_SetWindowLongW },
     { "GetCursorPos", shim_GetCursorPos },
     { "SetForegroundWindow", shim_SetForegroundWindow },
     { "BringWindowToTop", shim_BringWindowToTop },
@@ -1437,6 +1593,13 @@ int main(int argc, char** argv) {
     /* Unbuffered: the log is the evidence, and ExitProcess flushes nothing
      * with the C runtime linked in (/MT). */
     setvbuf(stderr, NULL, _IONBF, 0);
+    {   /* Real pixels. Without this Windows gives a program a smaller pretend screen on a scaled desktop (a
+         * 3840 by 2160 one at 125% is 3072 by 1728 to it) and stretches its window: a blurred picture, and no
+         * way for a borderless window to be the size of the screen. */
+        HMODULE user = GetModuleHandleA("user32.dll");
+        BOOL (WINAPI* aware)(HANDLE) = user ? (BOOL (WINAPI*)(HANDLE))(void*)GetProcAddress(user, "SetProcessDpiAwarenessContext") : NULL;
+        if (!aware || !aware((HANDLE)(INT_PTR)-4)) SetProcessDPIAware();        /* per monitor, version 2; or the older call */
+    }
     for (int i = 1; i < argc; i++) {
         int n = recomp_trace_arg(argc, argv, i);
         if (n) { i += n - 1; continue; }

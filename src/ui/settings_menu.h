@@ -24,6 +24,8 @@ int  fc_host_fps(void);                   /* frames a second; 0 = no limit, -1 =
 void fc_host_set_fps(int fps);
 const char* fc_host_renderer(void);       /* "d3d9", "vulkan" or "d3d12": what is drawing now */
 int  fc_host_has_dxvk(void);              /* is there a dxvk\d3d9.dll to draw with? */
+int  fc_host_mouse(void);                 /* does the game have its pointer and the mouse? */
+void fc_host_set_mouse(int on);
 void fc_host_shot(void* device, const char* name);   /* --shots: the back buffer as <name>.png */
 
 #ifdef __cplusplus

@@ -20,7 +20,8 @@
  *   device: they take effect at the next start.
  *
  *   The port's settings, in a section of their own in the same file,
- *   [Recomp]: Fps (taken at once) and Renderer (at the next start).
+ *   [Recomp]: Fps and Mouse (taken at once), Renderer and Borderless (at the
+ *   next start).
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -58,14 +59,13 @@ struct Row {
 
 static const Choice k_off_on[] = { { "Off", 0 }, { "On", 1 } };
 static const Choice k_on_off[] = { { "On", 0 }, { "Off", 1 } };      /* the game's "...Off" keys */
-static const Choice k_display[] = { { "Window", 1 }, { "Full screen", 0 } };
 static const Choice k_samples[] = { { "Off", 0 }, { "2x", 2 }, { "4x", 4 }, { "8x", 8 } };
 static const Choice k_filter[] = { { "Nearest", 1 }, { "Linear", 2 }, { "Anisotropic", 3 } };
 static const Choice k_shadows[] = { { "Off", 0 }, { "Simple", 1 }, { "Full", 2 } };
 #define CHOICES(a) a, (int)(sizeof a / sizeof a[0])
 
+#define FC_WINDOW_MODE 0x007A859Au      /* byte: WindowMode, 1 a window */
 static const Row k_screen[] = {
-    { "Display", L"Video", L"WindowMode", 0x007A859A, 1, CHOICES(k_display), "A window, or the whole screen." },
     { "Vertical sync", L"Video", L"WaitVSync", 0x007A859B, 1, CHOICES(k_off_on), "Wait for the screen before showing each frame: no tearing." },
     { "Anti-aliasing", L"Video", L"FullAntiAlias", 0x007A8598, 1, CHOICES(k_samples), "Smoother edges, for some of the graphics card's time." },
     { "Keep the picture's shape", L"Video", L"KeepAspect", 0x007A8118, 1, CHOICES(k_off_on), "Bars at the sides rather than a stretched picture." },
@@ -110,6 +110,7 @@ static const struct { const char* name; const char* word; } k_renderers[] = {
     { "Direct3D 9", "d3d9" }, { "Vulkan", "vulkan" }, { "Direct3D 12", "d3d12" },
 };
 static char g_renderer_next[16];        /* what the settings file asks for at the next start */
+static int g_borderless_next;           /* and whether the window is to be borderless */
 
 static void renderer_read(void) {
     wchar_t text[16] = L"";
@@ -117,6 +118,7 @@ static void renderer_read(void) {
     if (path) GetPrivateProfileStringW(L"Recomp", L"Renderer", L"", text, 16, path);
     snprintf(g_renderer_next, sizeof g_renderer_next, "%ls", text);
     if (!g_renderer_next[0]) snprintf(g_renderer_next, sizeof g_renderer_next, "%s", fc_host_renderer());
+    g_borderless_next = path && GetPrivateProfileIntW(L"Recomp", L"Borderless", 0, path) != 0;
 }
 
 /* ---- resolutions: what the display offers, and what is set ----------------------------- */
@@ -170,6 +172,16 @@ static LRESULT CALLBACK menu_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_SYSKEYDOWN: case WM_SYSKEYUP: case WM_SYSCHAR:
             return DefWindowProcW(h, m, w, l);        /* Alt+F4 still closes the game */
         }
+    }
+    if (!fc_host_mouse()) switch (m) {  /* the mouse switched off: the game is not told of it, and shows no pointer */
+    case WM_MOUSEMOVE: case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
+    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+    case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+        return 0;
+    case WM_SETCURSOR:
+        if (LOWORD(l) == HTCLIENT) { SetCursor(NULL); return TRUE; }
+        break;
     }
     return CallWindowProcW(g_prev_proc, h, m, w, l);
 }
@@ -375,6 +387,17 @@ int fc_menu_frame(void* device) {
                     write_int(L"Video", L"HeightDX9", g_modes[at].h);
                     fprintf(stderr, "[menu] resolution = %dx%d\n", g_modes[at].w, g_modes[at].h);
                 }
+                {   /* a window, a borderless window (the port's own), or the game's full screen */
+                    const char* modes[3] = { "Window", "Borderless window", "Full screen" };
+                    int mode = !G8(FC_WINDOW_MODE) ? 2 : g_borderless_next ? 1 : 0;
+                    if (choose("Display", modes, 3, &mode, "A window; a window without a frame that covers the screen; or the screen itself, switched to the resolution above.")) {
+                        G8(FC_WINDOW_MODE) = mode == 2 ? 0 : 1;
+                        g_borderless_next = mode == 1;
+                        write_int(L"Video", L"WindowMode", mode == 2 ? 0 : 1);
+                        write_int(L"Recomp", L"Borderless", g_borderless_next);
+                        fprintf(stderr, "[menu] display = %s (at the next start)\n", modes[mode]);
+                    }
+                }
                 rows(k_screen, (int)(sizeof k_screen / sizeof k_screen[0]));
 
                 const char* rnames[3];
@@ -422,6 +445,13 @@ int fc_menu_frame(void* device) {
         }
         if (ImGui::BeginTabItem("Game", NULL, third)) {
             if (table("game")) {
+                const char* onoff[2] = { "On", "Off" };
+                int mouse = fc_host_mouse() ? 0 : 1;
+                if (choose("Mouse", onoff, 2, &mouse, "Off: no pointer, and the mouse does nothing in the game. For a pad or the keyboard alone. Taken at once.")) {
+                    fc_host_set_mouse(mouse == 0);
+                    write_int(L"Recomp", L"Mouse", mouse == 0);
+                    fprintf(stderr, "[menu] mouse = %s\n", onoff[mouse]);
+                }
                 rows(k_game, (int)(sizeof k_game / sizeof k_game[0]));
                 ImGui::EndTable();
             }
@@ -437,7 +467,7 @@ int fc_menu_frame(void* device) {
     if (ImGui::GetWindowHeight() - foot > ImGui::GetCursorPosY()) ImGui::SetCursorPosY(ImGui::GetWindowHeight() - foot);
     ImGui::Separator();
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.70f, 0.72f, 0.76f, 1.0f));
-    ImGui::TextWrapped("Saved as you change them. Everything but the frame rate takes effect the next time the game starts.");
+    ImGui::TextWrapped("Saved as you change them. The frame rate and the mouse change at once; the rest the next time the game starts.");
     ImGui::PopStyleColor();
     if (ImGui::Button("Back to the game")) leave = true;
     ImGui::SameLine();
@@ -456,7 +486,7 @@ int fc_menu_frame(void* device) {
     }
     if (g_grab_frame) {                                           /* a test: a picture of each page and out */
         if (g_grab_frame == 1 && g_grab_change) {                 /* and two settings changed, as a row changes them */
-            row_set(k_screen[1], 1);
+            row_set(k_screen[0], 1);
             fc_host_set_fps(60);
             write_int(L"Recomp", L"Fps", 60);
         }

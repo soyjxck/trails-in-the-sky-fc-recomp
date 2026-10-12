@@ -824,3 +824,65 @@ closed and the pointer gone; a touch on LOAD, and the list of saves, the one
 under the pointer lit.
 
 Not tried yet: a real finger on a real console, and a real mouse.
+
+## 21. A borderless window, the mouse switched off, and three faults a player found
+
+The first hands-on session with the settings menu (4K, full screen,
+Direct3D 12, vertical sync, all chosen in the menu and all taken at the next
+start) asked for two things and turned up three faults.
+
+**A borderless window** (`[Recomp] Borderless=1` with `WindowMode=1`; the
+menu's Display row has it between Window and Full screen). The game stays in
+its window mode and the window is the host's business: the shims of
+`CreateWindowExW`, `SetWindowPos` and `SetWindowLongW` give it a frameless
+style and the rectangle of its screen whatever the game asks for. The
+picture, at the resolution the settings say, is stretched to it by
+`Present`, to the largest rectangle of its own shape when the screen's is
+another. The process now tells Windows it works in real pixels
+(`SetProcessDpiAwarenessContext`): without that a 3840 by 2160 screen at
+125% is 3072 by 1728 to the program, its window is stretched and blurred,
+and a borderless window cannot be the size of the screen.
+
+The first build of it was a black screen. The host had given the window's
+class a black brush for the bars beside a picture of another shape, and the
+game never validates its window, so Windows went on erasing it with that
+brush, over the picture. The game was running all the while (its back
+buffer, saved by a play script, held the title screen). The bars are now
+painted by the host every 120 frames, and only when there are bars.
+
+**The mouse switched off** (`[Recomp] Mouse=0`, and a row in the menu, taken
+at once). The poll reads the mouse's buttons from its DirectInput device
+when it has one (0x0079B1A4) and otherwise from what the window procedure
+noted of the button messages; the pointer's place is always `GetCursorPos`.
+So for the length of the poll the device is not there, the window is not
+given mouse messages (the menu has the window's procedure first),
+`GetCursorPos` and `SetCursorPos` are the private pointer the unattended
+runs use, and after the poll the game is with the buttons (20). The device
+is let go once, so that Windows has its pointer back.
+
+**A lost device was waited for with the window dead.** The game resets a
+lost device once and leaves if that fails; the host's `Reset` waits first
+until the device can be reset. It waited in a loop of `Sleep` for at most
+ten minutes, without pumping the window's messages. A game in full screen
+that the player switches away from gets its device back only when its
+window is active again, and a window whose thread does not answer cannot be
+made that: ten minutes after Alt+Tab the game left. The wait now pumps
+messages, has no limit, and puts the game's clock forward by its length.
+
+**Vertical sync in a window was 32 frames a second.** Direct3D 9, and
+Direct3D 9 on 12, asked to wait for the screen while drawing into a window,
+held every `Present` for 31 ms on a 120 Hz screen, whatever the resolution
+(`--slow-calls 20` names the call); the same setting in full screen gave
+120, and DXVK gave 120 in a window too. For the other two the host now
+makes a windowed device without the wait and follows `Present` with
+`DwmFlush`, the desktop's own beat: 120.0 frames a second at 3840 by 2160
+on both.
+
+Checked: the borderless window's place, size and style from outside
+(0,0 to 3840,2160, no caption, no frame); its picture on Direct3D 9 by
+`PrintWindow` (black with the brush, the title screen without); the frame
+rates above in unattended runs; the menu's new rows in its pictures. A
+borderless window drawn by Direct3D 9 on 12 cannot be photographed this way
+(the desktop's capture calls see what is under it), so that one is the
+player's to look at. Not tried yet: Alt+Tab out of full screen and back,
+and the mouse row with a real mouse.
