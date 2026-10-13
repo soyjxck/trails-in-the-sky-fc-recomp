@@ -64,9 +64,20 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 #define UNLOCK() pthread_mutex_unlock(&g_lock)
 #define THREAD(name) static void* name(void* arg)
 #define THREAD_DONE  return NULL
+void hle_thread_aside(void);           /* win32hle.h */
+typedef struct { void* (*f)(void*); void* arg; } started;
+static void* beside(void* p) {         /* not in turns with the game's own thread, where that is a choice */
+    started s = *(started*)p;
+    free(p);
+    hle_thread_aside();
+    return s.f(s.arg);
+}
 static int start(void* (*f)(void*), void* arg) {
     pthread_t t;
-    if (pthread_create(&t, NULL, f, arg)) return 0;
+    started* s = malloc(sizeof *s);
+    if (!s) return 0;
+    s->f = f, s->arg = arg;
+    if (pthread_create(&t, NULL, beside, s)) { free(s); return 0; }
     pthread_detach(t);
     return 1;
 }

@@ -20,6 +20,7 @@
  *     --shots DIR        save the picture there as PNG: the first frame, and
  *     --shot-every N     every Nth after it
  *     --watch S          say every S seconds where the game is
+ *     --perf S           say every S seconds where the frames' time went (the Switch does, every 10; 0 = not)
  *     --trace PREFIX     list every call out whose name starts so (IDirect3D...)
  *     --d3d-log          list render targets, viewports and what is read back
  *     --audio-out FILE   write everything the game's mixer puts out to a WAV file
@@ -43,10 +44,13 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include <pthread.h>
+#include <time.h>
 #include "win32hle.h"
 #include "pe_loader.h"
 #include "host.h"
 #include "mods.h"
+#include "pace.h"
 #include <strings.h>
 
 /* On the Switch the game's folder is on the SD card and there is no console
@@ -65,9 +69,11 @@
 static char g_home[300] = "/switch/trails";
 static char g_exe[400], g_saves[400], g_args[400];
 static volatile int g_log_open;
+static void profile_write(void);
 static void log_done(int code) {
     static int said;
     if (said++) return;
+    profile_write();
     fprintf(stderr, "done: exit code %d\n", code);
     fflush(stderr);
     g_log_open = 0;
@@ -78,6 +84,7 @@ static void log_done_at_exit(void) { log_done(0); }
  * so that a run that stops dead still leaves its last words. */
 static void* log_keeper(void* arg) {
     (void)arg;
+    hle_thread_aside();
     for (;;) {
         svcSleepThread(1000000000ull);
         if (g_log_open) fsync(fileno(stderr));
@@ -282,16 +289,17 @@ void fc_orig_00477180(void);
 /* ---- a play script (--script FILE) ---------------------------------------------------
  * The Windows host's, line for line (src/runtime/host.c has the format):
  * wait MS, hold BUTTON MS, tap BUTTON [times [interval]], shot NAME, log TEXT,
- * quit; and one of this host's own, touch X Y [MS], a finger on the picture
- * at that point of it for that long (200 ms). While a script has steps left
- * it answers Input_Poll instead of the controller. */
+ * quit; and two of this host's own: touch X Y [MS], a finger on the picture
+ * at that point of it for that long (200 ms), and profile, from which a
+ * profile (--profile) counts again, leaving out what came before. While a
+ * script has steps left it answers Input_Poll instead of the controller. */
 static const struct { const char* name; uint32_t bit; } k_buttons[] = {
     { "UP", 0x1 }, { "DOWN", 0x2 }, { "RIGHT", 0x4 }, { "LEFT", 0x8 }, { "ESC", 0x10 }, { "SPACE", 0x20 },
     { "ENTER", 0x40 }, { "CTRL", 0x80 }, { "NUM0", 0x100 }, { "SHIFT", 0x200 }, { "Z", 0x400 }, { "X", 0x800 },
     { "PGUP", 0x1000 }, { "PGDN", 0x2000 }, { "B", 0x8000 }, { "C", 0x10000 }, { "M", 0x20000 },
     { "A", 0x400000 }, { "V", 0x800000 },
 };
-enum { STEP_WAIT, STEP_HOLD, STEP_SHOT, STEP_LOG, STEP_QUIT, STEP_TOUCH };
+enum { STEP_WAIT, STEP_HOLD, STEP_SHOT, STEP_LOG, STEP_QUIT, STEP_TOUCH, STEP_PROFILE };
 typedef struct { int kind; uint32_t ms, buttons; char text[128]; } step_t;
 #define LONGEST_TAP_MS 250u
 static step_t* g_steps;
@@ -299,6 +307,8 @@ static int g_nsteps, g_step, g_step_entered;
 static uint32_t g_step_started, g_step_started_wall;
 static char g_shot_pending[64];       /* a script's `shot`, taken at the next Present */
 static void wav_close(void);
+static void profile_write(void);
+static void profile_restart(void);
 
 static uint32_t button_mask(const char* word) {
     for (size_t i = 0; i < sizeof k_buttons / sizeof k_buttons[0]; i++)
@@ -332,6 +342,7 @@ static void load_script(const char* path) {
         } else if (!strcasecmp(verb, "shot") && sscanf(line, "%*s %47s", a) == 1) add_step(STEP_SHOT, 0, 0, a);
         else if (!strcasecmp(verb, "log") && sscanf(line, "%*s %127[^\r\n]", rest) == 1) add_step(STEP_LOG, 0, 0, rest);
         else if (!strcasecmp(verb, "quit")) add_step(STEP_QUIT, 0, 0, "");
+        else if (!strcasecmp(verb, "profile")) add_step(STEP_PROFILE, 0, 0, "");
         else fprintf(stderr, "[script] cannot read line: %s", line);
     }
     fclose(f);
@@ -353,9 +364,11 @@ static uint32_t scripted_buttons(void) {
             if (s->kind == STEP_SHOT) snprintf(g_shot_pending, sizeof g_shot_pending, "%s", s->text);
             if (s->kind == STEP_TOUCH) hle_d3d9_touch(1, (int)(s->buttons & 0xFFFFu), (int)(s->buttons >> 16));
             if (s->kind == STEP_LOG) fprintf(stderr, "[script] %s\n", s->text);
+            if (s->kind == STEP_PROFILE) profile_restart();
             if (s->kind == STEP_QUIT) {
                 fprintf(stderr, "[script] quit\n");
                 wav_close();
+                profile_write();
                 hle_exit(0);
             }
         }
@@ -472,7 +485,109 @@ void fc_wrap_004802C0(void) {
     g_eax |= (uint32_t)held;      /* beside what the poll found itself, which here is only the pointer's buttons */
     g_edx |= (uint32_t)(held >> 32);
 }
-void fc_wrap_004C11A0(void) { fc_orig_004C11A0(); }
+
+/* ---- the frame limiter (--fps N) -------------------------------------------------
+ * Clock_Update (0x004C11A0; thiscall, two byte arguments: wait, notify) is
+ * where the game holds a frame back: with `wait` set it reads the counter,
+ * pumps messages and yields, over and over, until 8 ms have passed since the
+ * frame before (src/runtime/host.c has the whole of it). The host waits
+ * instead, asleep until just before the frame is due, and tells the game's
+ * loop not to: N frames a second, 0 for no wait at all, -1 for the game's own
+ * loop. Frames are let go on a schedule, each a period after the last was
+ * due, so that waking late costs one frame a little and not every frame
+ * after it; a frame that overruns by more than a period starts the schedule
+ * again from now.
+ *
+ * On the Switch Present waits for the display, and that is the limit: a rate
+ * the display's sixty divides by (60, 30, 20) is kept by presenting every
+ * refresh, or every second or third, which no sleeping here could do as
+ * evenly. The default there is `--fps auto`: every refresh while the frames
+ * are ready in time and every second one while they are not (pace.h). */
+#define FC_CLOCK_COUNTER 0x007C8B4Du  /* byte: a performance counter is in use */
+#ifdef __SWITCH__
+static int g_fps_limit = 0, g_fps_auto = 1;
+#else
+static int g_fps_limit = 125;         /* the game's own ceiling */
+static int g_fps_auto;
+#endif
+static fc_pace g_pace;
+/* The processor time the calling thread has had, in nanoseconds. Between two
+ * Presents it is what the frame cost, whatever it waited for and wherever
+ * (the driver waits for the display in the frame's first clear, not in
+ * Present). */
+static uint64_t thread_cpu_ns(void) {
+#ifdef __SWITCH__
+    u64 ticks = 0;
+    svcGetInfo(&ticks, InfoType_ThreadTickCount, CUR_THREAD_HANDLE, UINT64_MAX);
+    return armTicksToNs(ticks);
+#else
+    struct timespec t;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t);
+    return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+#endif
+}
+/* A frame's work, for whoever asks after a Present: the processor time since
+ * the Present before, if the same thread made both (a loading screen is
+ * another thread's), and otherwise `took_ns`, the clock's. */
+static uint64_t g_worked_ns;          /* summed, for --perf */
+static uint64_t frame_work_ns(uint64_t took_ns) {
+    static uint64_t last;
+    static pthread_t by;
+    static int known;
+    uint64_t now = thread_cpu_ns(), work = took_ns;
+    pthread_t me = pthread_self();
+    if (known && pthread_equal(me, by) && now >= last) work = now - last;
+    last = now, by = me, known = 1;
+    g_worked_ns += work;
+    return work;
+}
+/* After each Present, with --fps auto: is it every refresh from here, or every second one? */
+static void pace_frame(uint64_t work_ns) {
+    static uint64_t last;
+    static unsigned late_seen;
+    uint64_t now = hle_now_ns();
+    if (!last) fc_pace_init(&g_pace);
+    else {
+        double took = (double)(now - last) / 1e6, work = (double)work_ns / 1e6;
+        unsigned late = g_pace.late;
+        int was = g_pace.interval, to = fc_pace_frame(&g_pace, (double)now / 1e9, took, work, 1000.0 / 60.0);
+        if (g_pace.late > late) late_seen = g_pace.late;
+        if (to != was) {
+            if (to == 2) fprintf(stderr, "[pace] 30 frames a second from here: %u frames came late in the last two seconds (the last had %.1f ms of work)\n", late_seen, work);
+            else fprintf(stderr, "[pace] 60 frames a second from here: a frame's work has been short for %u seconds\n", g_pace.need * 3);
+            hle_d3d9_vsync = to;
+        }
+    }
+    last = now;
+}
+static uint64_t g_waited_ns;          /* in the limiter, for --perf */
+static void frame_wait(uint64_t due) {
+    for (;;) {
+        uint64_t now = hle_now_ns();
+        if (now >= due) return;
+        uint64_t left = due - now;
+        if (left <= 200000u) continue;                  /* the last stretch: no sleep is this exact */
+        left -= 200000u;
+        struct timespec t = { 0, (long)(left > 4000000u ? 4000000u : left) };
+        hle_block_begin();                              /* asleep: the music's thread can have the machine */
+        nanosleep(&t, NULL);
+        hle_block_end();
+    }
+}
+void fc_wrap_004C11A0(void) {
+    static uint64_t due;
+    if (MEM8(g_esp + 4) && MEM8(FC_CLOCK_COUNTER) && g_fps_limit >= 0) {
+        if (g_fps_limit > 0) {
+            uint64_t period = 1000000000ull / (uint64_t)g_fps_limit, now = hle_now_ns();
+            due += period;
+            if (due + period < now || due > now + period) due = now;
+            frame_wait(due);
+            g_waited_ns += hle_now_ns() - now;
+        }
+        MEM8(g_esp + 4) = 0;          /* the wait is done: the game's own loop has nothing to add */
+    }
+    fc_orig_004C11A0();
+}
 
 /* MoviePlay (0x004886D0; the file's name, as the game's folder holds it, in
  * ecx): the host plays the whole movie here (movie.c), and a button ends it.
@@ -534,9 +649,69 @@ static void wav_open(const char* path) {
 
 /* ---- test runs: frames counted, pictures saved ------------------------------ */
 static const char* g_shots;
+/* ---- where the time goes (--perf S; on the Switch every ten seconds unless told otherwise) ----
+ * A few lines in the log every S seconds: how many frames, how long the
+ * longest, and a frame's time: how much of it its thread was at work (the
+ * rest it waited: for the display, the graphics chip, another thread or a
+ * file), and its split into drawing (with the programs made and textures
+ * filled in it), clearing, presenting and everything else, which is the
+ * game's own code; and what was read from files. It is what tells a slow
+ * processor from a slow graphics chip from a slow card: the first is a
+ * thread at work for nearly all of a long frame, the second a long frame
+ * with little work in it and no reads, the third the reads. The wait for the
+ * display is in the clearing or the presenting, whichever the driver waits
+ * in. */
+#ifdef __SWITCH__
+static unsigned g_perf_s = 10;
+#else
+static unsigned g_perf_s;
+#endif
+static void perf_frame(void) {
+    static uint64_t last, since, longest;
+    static unsigned frames, over33, over50;
+    uint64_t now = hle_now_ns();
+    if (!last) { last = since = now; return; }
+    uint64_t took = now - last;
+    last = now;
+    frames++;
+    if (took > longest) longest = took;
+    if (took > 33400000ull) over33++;
+    if (took > 50000000ull) over50++;
+    if (now - since < (uint64_t)g_perf_s * 1000000000ull) return;
+    hle_perf_t p;
+    hle_perf_take(&p);
+    double secs = (double)(now - since) / 1e9, per = 1e-6 / (double)frames;      /* ns in all -> ms a frame */
+    double frame = secs * 1000.0 / (double)frames, draw = (double)p.draw_ns * per, show = (double)p.present_ns * per;
+    double wait = (double)g_waited_ns * per, clear = (double)p.clear_ns * per, worked = (double)g_worked_ns * per;
+    g_waited_ns = g_worked_ns = 0;
+    const char* how = "";
+#ifdef __SWITCH__
+    how = appletGetOperationMode() == AppletOperationMode_Console ? (hle_d3d9_vsync > 1 ? " docked, every second refresh;" : " docked;")
+                                                                  : (hle_d3d9_vsync > 1 ? " handheld, every second refresh;" : " handheld;");
+#endif
+    fprintf(stderr, "[perf]%s %.1f frames a second (%u in %.0f s; the longest %.0f ms; %u over 33 ms, %u over 50 ms)\n", how,
+            (double)frames / secs, frames, secs, (double)longest / 1e6, over33, over50);
+    fprintf(stderr, "[perf]   a frame %.1f ms, its thread at work for %.1f of them: the game %.1f, drawing %.1f (%u draws; %u programs made in %.0f ms; "
+            "%u textures filled in %.0f ms), clearing %.1f, presenting %.1f (%.1f of it the swap), waiting for its time %.1f\n", frame, worked,
+            frame - draw - show - wait - clear, draw, p.draws / frames, p.programs, (double)p.program_ns / 1e6, p.textures, (double)p.texture_ns / 1e6,
+            clear, show, (double)p.swap_ns * per, wait);
+    if (hle_perf_phases)
+        fprintf(stderr, "[perf]   of the drawing: finding the program and texture %.1f, state %.1f, uniforms %.1f, vertices %.1f, the call %.1f\n",
+                (double)p.phase_ns[0] * per, (double)p.phase_ns[1] * per, (double)p.phase_ns[2] * per, (double)p.phase_ns[3] * per, (double)p.phase_ns[4] * per);
+    fprintf(stderr, "[perf]   files: %u reads, %.1f MB, %.0f ms\n", p.reads, (double)p.read_bytes / 1048576.0, (double)p.read_ns / 1e6);
+    since = now, longest = 0, frames = over33 = over50 = 0;
+}
+
 static unsigned g_shot_every, g_frames, g_frame_now;
 static void on_frame(unsigned frame) {
     g_frame_now = frame;
+    if (g_fps_auto || g_perf_s) {
+        static uint64_t last;
+        uint64_t now = hle_now_ns(), work = frame_work_ns(last ? now - last : 0);
+        last = now;
+        if (g_fps_auto) pace_frame(work);
+    }
+    if (g_perf_s) perf_frame();
     if (g_shot_pending[0]) {
         if (g_shots) {
             char path[700];
@@ -553,6 +728,7 @@ static void on_frame(unsigned frame) {
     if (g_frames && frame >= g_frames) {
         fprintf(stderr, "[frames] %u presented with %lu draws: leaving\n", frame, hle_d3d9_draws());
         wav_close();
+        profile_write();
         hle_exit(0);
     }
 }
@@ -585,6 +761,160 @@ static void catch_faults(void) {
 static void catch_faults(void) {}
 #endif
 
+/* ---- a profile (--profile FILE, Linux) ---------------------------------------------
+ * A timer's signal for every millisecond the process runs; when it lands on
+ * the game's thread, the address it interrupted is kept. As the run ends the
+ * addresses are written out with where the program was loaded, and
+ * tools/profile_portable.py puts names to them from the program's symbols:
+ * the lifted functions and the host's own, side by side. */
+#if defined(__linux__)
+#include <pthread.h>
+#include <sys/time.h>
+#include <ucontext.h>
+/* With each address go the ones it was called from, as far as the unwinder
+ * finds them (the lifted code and the host keep no frame pointers): time in
+ * a library is of no use without knowing who asked for it. */
+#define PROF_DEPTH 8
+static uintptr_t (*g_prof)[PROF_DEPTH];
+static volatile unsigned g_prof_n;
+static unsigned g_prof_room;
+static pthread_t g_prof_thread;
+static const char* g_prof_path;
+static void on_profile(int sig, siginfo_t* info, void* context) {
+    void* at[PROF_DEPTH + 4];
+    (void)sig, (void)info;
+    if (!pthread_equal(pthread_self(), g_prof_thread) || g_prof_n >= g_prof_room) return;
+    uintptr_t pc = (uintptr_t)((ucontext_t*)context)->uc_mcontext.gregs[REG_RIP], *to = g_prof[g_prof_n];
+    int n = backtrace(at, PROF_DEPTH + 4), from = 0, k = 1;
+    while (from < n && (uintptr_t)at[from] != pc) from++;        /* past this handler and the way into it */
+    to[0] = pc;
+    for (int i = from + 1; i < n && k < PROF_DEPTH; i++) to[k++] = (uintptr_t)at[i];
+    while (k < PROF_DEPTH) to[k++] = 0;
+    g_prof_n++;
+}
+static void profile_start(const char* path) {
+    struct sigaction sa;
+    struct itimerval every = { { 0, 1000 }, { 0, 1000 } };
+    void* warm[4];
+    backtrace(warm, 4);               /* the unwinder loads itself at its first use: not inside a signal */
+    g_prof_room = 1u << 20;
+    g_prof = malloc((size_t)g_prof_room * sizeof *g_prof);
+    if (!g_prof) return;
+    g_prof_path = path, g_prof_thread = pthread_self();
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = on_profile;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigaction(SIGPROF, &sa, NULL);
+    setitimer(ITIMER_PROF, &every, NULL);
+}
+static void profile_restart(void) { g_prof_n = 0; }
+static void profile_write(void) {
+    struct itimerval off = { { 0, 0 }, { 0, 0 } };
+    char line[512];
+    if (!g_prof_path) return;
+    setitimer(ITIMER_PROF, &off, NULL);
+    FILE* out = fopen(g_prof_path, "w");
+    FILE* maps = fopen("/proc/self/maps", "r");
+    if (out && maps) {
+        while (fgets(line, sizeof line, maps)) if (strstr(line, " r-xp ") || strstr(line, "trails-portable")) fprintf(out, "map %s", line);
+        for (unsigned i = 0; i < g_prof_n; i++) {
+            for (int k = 0; k < PROF_DEPTH && g_prof[i][k]; k++) fprintf(out, k ? " %lx" : "%lx", (unsigned long)g_prof[i][k]);
+            fputc('\n', out);
+        }
+        fprintf(stderr, "[profile] %u samples of the game's thread in %s\n", g_prof_n, g_prof_path);
+    }
+    if (out) fclose(out);
+    if (maps) fclose(maps);
+    g_prof_path = NULL;
+}
+#elif defined(__SWITCH__)
+/* The Switch has no such timer. A thread of the host's own, on another core,
+ * stops the game's thread five hundred times a second for as long as it takes
+ * to read its registers (the kernel hands them out only for a paused thread),
+ * and lets it go on: where it was, where that returns to, and the callers
+ * above as far as the frame records lead inside the thread's stack. These
+ * are samples of the clock, not of work: a thread that waits is found where
+ * it waits. Every ten seconds they are added to the file, so that a run ended
+ * from the console's menu leaves what it had. The file starts with where the
+ * program was loaded; tools/profile_portable.py names the addresses from
+ * trails.elf, the driver's functions among them (it is linked in). */
+#define PROF_DEPTH 8
+static uintptr_t (*g_prof)[PROF_DEPTH];
+static volatile unsigned g_prof_n;
+static unsigned g_prof_room;
+static Handle g_prof_thread;
+static const char* g_prof_path;
+static uintptr_t g_prof_lo, g_prof_hi;        /* the game thread's stack */
+static pthread_mutex_t g_prof_lock = PTHREAD_MUTEX_INITIALIZER;
+extern char _start[], __end__[];      /* the program as loaded: its first byte, and past its last */
+static void profile_flush(void) {
+    pthread_mutex_lock(&g_prof_lock);
+    FILE* out = g_prof_n ? fopen(g_prof_path, "a") : NULL;
+    if (out) {
+        for (unsigned i = 0; i < g_prof_n; i++) {
+            for (int k = 0; k < PROF_DEPTH && g_prof[i][k]; k++) fprintf(out, k ? " %lx" : "%lx", (unsigned long)g_prof[i][k]);
+            fputc('\n', out);
+        }
+        fclose(out);
+    }
+    g_prof_n = 0;
+    pthread_mutex_unlock(&g_prof_lock);
+}
+static void* profile_sampler(void* arg) {
+    unsigned since = 0;
+    (void)arg;
+    hle_thread_aside();
+    svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2C);       /* ahead of what it shares its core with: a sample is due when it is due */
+    for (;;) {
+        ThreadContext c;
+        svcSleepThread(2000000);
+        if (g_prof_n < g_prof_room && R_SUCCEEDED(svcSetThreadActivity(g_prof_thread, ThreadActivity_Paused))) {
+            if (R_SUCCEEDED(svcGetThreadContext3(&c, g_prof_thread))) {
+                uintptr_t* to = g_prof[g_prof_n];
+                uintptr_t fp = (uintptr_t)c.fp;
+                int k = 0;
+                to[k++] = (uintptr_t)c.pc.x;
+                to[k++] = (uintptr_t)c.lr;
+                while (k < PROF_DEPTH && fp >= g_prof_lo && fp + 16 <= g_prof_hi && !(fp & 15)) {
+                    uintptr_t next = ((const uintptr_t*)fp)[0], ret = ((const uintptr_t*)fp)[1];
+                    if (ret && ret != to[k - 1]) to[k++] = ret;
+                    if (next <= fp) break;
+                    fp = next;
+                }
+                while (k < PROF_DEPTH) to[k++] = 0;
+                g_prof_n++;
+            }
+            svcSetThreadActivity(g_prof_thread, ThreadActivity_Runnable);
+        }
+        if (++since >= 5000) since = 0, profile_flush();
+    }
+    return NULL;
+}
+static void profile_start(const char* path) {
+    MemoryInfo mi;
+    u32 page;
+    pthread_t t;
+    FILE* out = fopen(path, "w");
+    if (!out) { fprintf(stderr, "[profile] cannot write %s\n", path); return; }
+    fprintf(out, "map %lx-%lx r-xp 00000000 00:00 0 trails.elf\n", (unsigned long)(uintptr_t)_start, (unsigned long)(uintptr_t)__end__);
+    fclose(out);
+    g_prof_room = 8192;
+    g_prof = malloc((size_t)g_prof_room * sizeof *g_prof);
+    if (!g_prof || R_FAILED(svcQueryMemory(&mi, &page, (u64)(uintptr_t)&mi))) return;
+    g_prof_lo = (uintptr_t)mi.addr, g_prof_hi = (uintptr_t)(mi.addr + mi.size);
+    g_prof_path = path, g_prof_thread = threadGetCurHandle();
+    if (pthread_create(&t, NULL, profile_sampler, NULL)) { g_prof_path = NULL; return; }
+    pthread_detach(t);
+    fprintf(stderr, "[profile] the game's thread is sampled into %s (the program is at %lx)\n", path, (unsigned long)(uintptr_t)_start);
+}
+static void profile_restart(void) { g_prof_n = 0; }
+static void profile_write(void) { if (g_prof_path) profile_flush(); }
+#else
+static void profile_start(const char* path) { (void)path; }
+static void profile_write(void) {}
+static void profile_restart(void) {}
+#endif
+
 /* ---- where the game is, said from a thread of the host's own -------------------- */
 #include <pthread.h>
 #include <time.h>
@@ -593,6 +923,7 @@ static void* watch_thread(void* arg) {
     struct timespec nap = { (time_t)g_watch, 0 };
     unsigned long last[HLE_THREADS_SEEN] = { 0 };
     (void)arg;
+    hle_thread_aside();
     for (unsigned t = g_watch;; t += g_watch) {
         nanosleep(&nap, NULL);
         fprintf(stderr, "[watch] %u s: frame %u, %lu draws, the renderer is %s\n", t, g_frame_now, hle_d3d9_draws(), hle_d3d9_doing);
@@ -625,7 +956,8 @@ int main(int argc, char** argv) {
     const char* exe = NULL;
     const char* saves = "save";       /* --saves DIR: where the game's Saved Games folder is */
     const char* mods = NULL;
-    int list_only = 0, voice_log = 0;
+    int list_only = 0, voice_log = 0, perf_detail = 0;
+    const char* profile = NULL;
 #ifdef __SWITCH__
     static char text[2048];
     static char* words[64];
@@ -656,6 +988,13 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--shots") && i + 1 < argc) g_shots = argv[++i];
         else if (!strcmp(argv[i], "--shot-every") && i + 1 < argc) g_shot_every = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--watch") && i + 1 < argc) g_watch = (unsigned)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--perf") && i + 1 < argc) g_perf_s = (unsigned)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--perf-detail")) perf_detail = 1;
+        else if (!strcmp(argv[i], "--fps") && i + 1 < argc) {
+            g_fps_auto = !strcmp(argv[++i], "auto");
+            if (!g_fps_auto) g_fps_limit = atoi(argv[i]);
+        } else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1, g_fps_auto = 0;
+        else if (!strcmp(argv[i], "--profile") && i + 1 < argc) profile = argv[++i];
         else if (!strcmp(argv[i], "--d3d-log")) hle_d3d9_log = 1;
         else if (!strcmp(argv[i], "--audio-out") && i + 1 < argc) wav_open(argv[++i]);
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) load_script(argv[++i]);
@@ -668,6 +1007,10 @@ int main(int argc, char** argv) {
 #ifdef __SWITCH__
     if (!exe) exe = g_exe;
 #endif
+#ifdef __SWITCH__
+    if (g_fps_limit > 0 && g_fps_limit <= 60 && 60 % g_fps_limit == 0) hle_d3d9_vsync = 60 / g_fps_limit, g_fps_limit = 0;
+#endif
+    if (g_fps_auto) g_fps_limit = 0, hle_d3d9_vsync = 1;      /* the display is the limit, and Present waits for it */
     if (g_shots) mkdir(g_shots, 0755);
     /* The game's folder is the working directory (the game counts on it):
      * SoraVoice's files are looked for there, then the mod folders. */
@@ -679,8 +1022,11 @@ int main(int argc, char** argv) {
     fc_voice_init(voice_log);
     hle_d3d9_title = "Trails in the Sky FC";
     hle_d3d9_frame_hook = on_frame;
+    hle_perf_on = g_perf_s != 0;
+    hle_perf_phases = hle_perf_on && perf_detail;
     if (g_watch) {
         pthread_t t;
+        hle_threads_watched = 1;
         pthread_create(&t, NULL, watch_thread, NULL);
     }
 #ifndef __SWITCH__
@@ -689,7 +1035,8 @@ int main(int argc, char** argv) {
     catch_faults();
     if (!exe) {
         fprintf(stderr, "usage: trails-portable [--imports] [--saves DIR] [--headless] [--frames N]\n"
-                        "                       [--shots DIR] [--shot-every N] [--watch S] <path to ed6_win_DX9.exe>\n");
+                        "                       [--shots DIR] [--shot-every N] [--watch S] [--perf S] [--perf-detail]\n"
+                        "                       [--fps N (0 = no limit) | auto] [--original-limiter] <path to ed6_win_DX9.exe>\n");
         return 1;
     }
     mkdir(saves, 0755);
@@ -710,6 +1057,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "%d imports have no answer yet\n", g_unanswered);
     if (list_only) return 0;
     fprintf(stderr, "entering 0x%08X\n\n", fc_entry_va);
+    if (profile) profile_start(profile);
     uint32_t rc = hle_call_guest(fc_entry_va, 0, NULL);
     fprintf(stderr, "\nentry returned eax=%08X\n", rc);
 #ifdef __SWITCH__
