@@ -1030,14 +1030,17 @@ A frame's work is therefore taken as the processor time its thread had
 (`svcGetInfo`'s thread tick count; `CLOCK_THREAD_CPUTIME_ID` on Linux), which
 no wait is in.
 
-**Forty-odd frames a second is a stutter.** Where Present waits for the
-display, a scene that cannot quite be drawn at sixty comes out as frames of
-one refresh and of two, mixed. `src/portable/pace.c` (`--fps auto`, the
-Switch's default) presents at every refresh while frames are ready in time,
-at every second one when eighteen of the last hundred and twenty came late,
-and goes back up when the thread's work has stayed under thirteen
-milliseconds a frame for six seconds; going up and falling again at once
-doubles that wait. `--fps 60` and `--fps 30` pin it.
+**A rate that changes by itself: tried, and taken out.** Where Present waits
+for the display, a scene that cannot quite be drawn at sixty comes out as
+frames of one refresh and of two, mixed. For a day the host answered that by
+presenting at every refresh while frames were ready in time and at every
+second one while they were not, going back up when the work had been short
+for a while. The player's word on it, unprompted, was that this is what makes
+another game on the same console feel bad, and not to do it: a rate that
+steps between sixty and thirty as the scene changes is felt at every step. It
+is gone. The rate is what `--fps` asks for and stays that: `--fps 0` is the
+display's sixty with frames late when they are late, `--fps 30` every second
+refresh throughout.
 
 **Sprite sheets.** While the party walks, ten to twenty textures a second are
 filled: 256 by 256, four bits a channel, the people's sprite sheets, which
@@ -1075,7 +1078,7 @@ there too.
 
 Not known yet: the same numbers from a console. Its processor is several
 times slower than the emulator's host, so sixty out of doors is not to be
-expected from this alone; an even thirty is what the pacing is for. The log
+expected from this alone. The log
 of a run on one (`trails.log`, the `[perf]` lines) is the next thing to
 read, and a profile with it (`--profile sdmc:/switch/trails/profile.txt` in
 `args.txt`, then `tools/profile_portable.py trails.elf profile.txt`).
@@ -1109,15 +1112,15 @@ half of it (pictures of each; the emulator's by photographing its window).
 What Ryujinx runs is the console's program, driver included, so what can
 differ on a console is what an emulator is lenient about or has no like of:
 the graphics chip's own memory and its timing, the display's queue, the
-cores. Four things in section 23 lean on those, and each now has a switch,
+cores. Three things in section 23 lean on those, and each now has a switch,
 which on the Switch is off until a run on a console has shown it right:
 
 | in `args.txt` | what it switches on |
 |---|---|
 | `--stream` | vertices that come with a draw go into one 4 MB buffer, mapped without waiting and thrown away for a fresh one when full; without it, a buffer of its own for every draw, as before section 23 |
-| `--fps auto`, `--fps 0`, `--fps 30` | the host paces the frames (by presenting at every refresh or every second one) and the game's own wait loop is skipped; without it, the game's own limiter, as before |
+| `--fps 0`, `--fps 30` | the display is the limit (every refresh, or every second one throughout) and the game's own wait loop is skipped; without it, the game's own limiter, as before |
 | `--aside` | threads other than the game's first are kept off its core |
-| `--gl-plain` | not one of the four but the test for "none of them": every draw says everything to GL again |
+| `--gl-plain` | not one of the three but the test for "none of them": every draw says everything to GL again |
 
 So a console is back to how it drew before, with what section 23 took out
 of the processor's work left in (the state that is not sent twice, the C
@@ -1142,5 +1145,5 @@ from GL and sent up again as a texture. Under Ryujinx only the left quarter
 of each row comes back (section 14), so there it is a strip of the scene and
 black beside it; a console reads the whole of it.
 
-Open: which of the four it is, or what else. The next log from a console
+Open: which of the three it is, or what else. The next log from a console
 says.

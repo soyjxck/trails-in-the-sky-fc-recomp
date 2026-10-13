@@ -50,7 +50,6 @@
 #include "pe_loader.h"
 #include "host.h"
 #include "mods.h"
-#include "pace.h"
 #include <strings.h>
 
 /* On the Switch the game's folder is on the SD card and there is no console
@@ -501,19 +500,18 @@ void fc_wrap_004802C0(void) {
  * On the Switch Present waits for the display, and that is the limit: a rate
  * the display's sixty divides by (60, 30, 20) is kept by presenting every
  * refresh, or every second or third, which no sleeping here could do as
- * evenly. The default there is `--fps auto`: every refresh while the frames
- * are ready in time and every second one while they are not (pace.h). */
+ * evenly. The rate is the one asked for and stays it: a rate that moved
+ * between sixty and thirty by itself was tried and taken out again
+ * (docs/bringup.md, 23). */
 #define FC_CLOCK_COUNTER 0x007C8B4Du  /* byte: a performance counter is in use */
 #ifdef __SWITCH__
 /* On a console the game's own loop is the default until the rest has been
- * seen to work on one (docs/bringup.md, 24): --fps auto is the even pace,
- * --fps 0 the display's rate with no loop. */
-static int g_fps_limit = -1, g_fps_auto = 0;
+ * seen to work on one (docs/bringup.md, 24): --fps 0 is the display's rate
+ * with no loop. */
+static int g_fps_limit = -1;
 #else
 static int g_fps_limit = 125;         /* the game's own ceiling */
-static int g_fps_auto;
 #endif
-static fc_pace g_pace;
 /* The processor time the calling thread has had, in nanoseconds. Between two
  * Presents it is what the frame cost, whatever it waited for and wherever
  * (the driver waits for the display in the frame's first clear, not in
@@ -543,25 +541,6 @@ static uint64_t frame_work_ns(uint64_t took_ns) {
     last = now, by = me, known = 1;
     g_worked_ns += work;
     return work;
-}
-/* After each Present, with --fps auto: is it every refresh from here, or every second one? */
-static void pace_frame(uint64_t work_ns) {
-    static uint64_t last;
-    static unsigned late_seen;
-    uint64_t now = hle_now_ns();
-    if (!last) fc_pace_init(&g_pace);
-    else {
-        double took = (double)(now - last) / 1e6, work = (double)work_ns / 1e6;
-        unsigned late = g_pace.late;
-        int was = g_pace.interval, to = fc_pace_frame(&g_pace, (double)now / 1e9, took, work, 1000.0 / 60.0);
-        if (g_pace.late > late) late_seen = g_pace.late;
-        if (to != was) {
-            if (to == 2) fprintf(stderr, "[pace] 30 frames a second from here: %u frames came late in the last two seconds (the last had %.1f ms of work)\n", late_seen, work);
-            else fprintf(stderr, "[pace] 60 frames a second from here: a frame's work has been short for %u seconds\n", g_pace.need * 3);
-            hle_d3d9_vsync = to;
-        }
-    }
-    last = now;
 }
 static uint64_t g_waited_ns;          /* in the limiter, for --perf */
 static void frame_wait(uint64_t due) {
@@ -709,13 +688,13 @@ static void perf_frame(void) {
 static unsigned g_shot_every, g_frames, g_frame_now;
 static void on_frame(unsigned frame) {
     g_frame_now = frame;
-    if (g_fps_auto || g_perf_s) {
+    if (g_perf_s) {
         static uint64_t last;
-        uint64_t now = hle_now_ns(), work = frame_work_ns(last ? now - last : 0);
+        uint64_t now = hle_now_ns();
+        frame_work_ns(last ? now - last : 0);
         last = now;
-        if (g_fps_auto) pace_frame(work);
+        perf_frame();
     }
-    if (g_perf_s) perf_frame();
     if (g_shot_pending[0]) {
         if (g_shots) {
             char path[700];
@@ -967,7 +946,7 @@ int main(int argc, char** argv) {
     static char* words[64];
     /* What only a console can show to be wrong is off there until it has been
      * seen to be right on one; args.txt switches each on (--stream, --aside,
-     * --fps auto). Before the first thread of the host's own is started. */
+     * --fps 0). Before the first thread of the host's own is started. */
     hle_d3d9_stream = 0, hle_threads_aside = 0;
     hle_d3d9_watch_picture = 120;     /* and the log is told when the picture goes black: nobody else can say */
     switch_start(argc, argv);
@@ -1005,10 +984,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--aside")) hle_threads_aside = 1;
         else if (!strcmp(argv[i], "--no-aside")) hle_threads_aside = 0;
         else if (!strcmp(argv[i], "--watch-picture") && i + 1 < argc) hle_d3d9_watch_picture = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--fps") && i + 1 < argc) {
-            g_fps_auto = !strcmp(argv[++i], "auto");
-            if (!g_fps_auto) g_fps_limit = atoi(argv[i]);
-        } else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1, g_fps_auto = 0;
+        else if (!strcmp(argv[i], "--fps") && i + 1 < argc) g_fps_limit = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1;
         else if (!strcmp(argv[i], "--profile") && i + 1 < argc) profile = argv[++i];
         else if (!strcmp(argv[i], "--d3d-log")) hle_d3d9_log = 1;
         else if (!strcmp(argv[i], "--audio-out") && i + 1 < argc) wav_open(argv[++i]);
@@ -1025,10 +1002,9 @@ int main(int argc, char** argv) {
 #ifdef __SWITCH__
     if (g_fps_limit > 0 && g_fps_limit <= 60 && 60 % g_fps_limit == 0) hle_d3d9_vsync = 60 / g_fps_limit, g_fps_limit = 0;
 #endif
-    if (g_fps_auto) g_fps_limit = 0, hle_d3d9_vsync = 1;      /* the display is the limit, and Present waits for it */
     fprintf(stderr, "[host] frames: %s; vertices %s; draws say %s; other threads %s\n",
-            g_fps_auto ? "the display's rate or half of it (--fps auto)" : g_fps_limit < 0 ? "the game's own limiter" :
-            g_fps_limit == 0 ? "no limit but the display's" : "the host's limiter",
+            g_fps_limit < 0 ? "the game's own limiter" : g_fps_limit > 0 ? "the host's limiter" :
+            hle_d3d9_vsync > 1 ? "every second or third of the display's (--fps)" : "no limit but the display's",
             hle_d3d9_stream ? "in one stream" : "in a buffer a draw (--no-stream)", hle_d3d9_plain ? "everything (--gl-plain)" : "what changed",
             hle_threads_aside ? "kept off the first one's core" : "left where they start (--no-aside)");
     if (g_shots) mkdir(g_shots, 0755);
@@ -1057,7 +1033,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: trails-portable [--imports] [--saves DIR] [--headless] [--frames N]\n"
                         "                       [--shots DIR] [--shot-every N] [--watch S] [--perf S] [--perf-detail]\n"
                         "                       [--stream | --no-stream] [--gl-plain] [--aside | --no-aside] [--watch-picture N]\n"
-                        "                       [--fps N (0 = no limit) | auto] [--original-limiter] <path to ed6_win_DX9.exe>\n");
+                        "                       [--fps N (0 = no limit)] [--original-limiter] <path to ed6_win_DX9.exe>\n");
         return 1;
     }
     mkdir(saves, 0755);
