@@ -35,12 +35,14 @@ The logo and opening movies play too. The game's pointer shows only while a
 pointer is used: a mouse, or the Switch's touch screen (touch a menu item to
 choose it). The keyboard is not there yet (docs/bringup.md, 13 to 21).
 
-On the Switch the port presents at the display's sixty frames a second
-while it can and at an even thirty while it cannot (`--fps auto`; `--fps 60`
-or `--fps 30` in `args.txt` beside the program pins it), and `trails.log`
-says every ten seconds where a frame's time went. `--profile FILE` samples
-the game's thread, there and on Linux, and `tools/profile_portable.py` names
-the result (docs/bringup.md, 23).
+On the Switch `trails.log` says every ten seconds where a frame's time went,
+and when the picture goes black. With `--fps auto` in `args.txt` beside the
+program the port presents at the display's sixty frames a second while it
+can and at an even thirty while it cannot (`--fps 60` or `--fps 30` pins it);
+that, and two more of the things that make it faster, are off there until a
+console has been seen to take them (docs/bringup.md, 24). `--profile FILE`
+samples the game's thread, there and on Linux, and
+`tools/profile_portable.py` names the result (docs/bringup.md, 23).
 
 See [docs/bringup.md](docs/bringup.md) for every wall on the way.
 

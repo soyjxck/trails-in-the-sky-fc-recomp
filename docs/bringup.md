@@ -1097,3 +1097,50 @@ One setting of the game's does help, on the processor's side:
 `ShadowQuality=0` in config.ini (no shadows under the people) takes a sixth
 off the game's own part of a frame on Linux, 1.9 ms against 2.3.
 `ShadowQuality=1` and `LowEffect=1` change nothing that can be measured.
+
+## 24. A menu goes black on a console, and nowhere else
+
+With section 23's build on a console: "the menu goes black, but sound keeps
+going". It has not been made to happen anywhere else. Linux and Ryujinx draw
+the logo movie, the title screen left alone for a minute, the load screen, a
+loaded save and the camp menu with that build, at the display's rate and at
+half of it (pictures of each; the emulator's by photographing its window).
+
+What Ryujinx runs is the console's program, driver included, so what can
+differ on a console is what an emulator is lenient about or has no like of:
+the graphics chip's own memory and its timing, the display's queue, the
+cores. Four things in section 23 lean on those, and each now has a switch,
+which on the Switch is off until a run on a console has shown it right:
+
+| in `args.txt` | what it switches on |
+|---|---|
+| `--stream` | vertices that come with a draw go into one 4 MB buffer, mapped without waiting and thrown away for a fresh one when full; without it, a buffer of its own for every draw, as before section 23 |
+| `--fps auto`, `--fps 0`, `--fps 30` | the host paces the frames (by presenting at every refresh or every second one) and the game's own wait loop is skipped; without it, the game's own limiter, as before |
+| `--aside` | threads other than the game's first are kept off its core |
+| `--gl-plain` | not one of the four but the test for "none of them": every draw says everything to GL again |
+
+So a console is back to how it drew before, with what section 23 took out
+of the processor's work left in (the state that is not sent twice, the C
+runtime functions, the sprite sheets, the music decoder that lets go of the
+machine).
+
+And the log says more, since nobody but the player sees a console's screen:
+
+- a `[host]` line at the start with how the switches stand;
+- GL's errors, a line each for the first two dozen (nothing here asks GL
+  for what it may refuse);
+- every 120th frame (`--watch-picture N`; 0 for never) three small pieces of
+  the frame are read back, from the game's own buffer before it is shown and
+  from the window's after it has been copied there, and a line is written
+  when either turns black and when it is a picture again. Which of the two
+  went black says whether the drawing failed or the showing;
+- the `[perf]` lines count what was not drawn because another thread kept
+  the graphics context.
+
+One thing seen on the way: the camp menu's background is the frame read back
+from GL and sent up again as a texture. Under Ryujinx only the left quarter
+of each row comes back (section 14), so there it is a strip of the scene and
+black beside it; a console reads the whole of it.
+
+Open: which of the four it is, or what else. The next log from a console
+says.

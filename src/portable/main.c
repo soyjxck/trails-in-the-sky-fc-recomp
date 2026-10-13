@@ -505,7 +505,10 @@ void fc_wrap_004802C0(void) {
  * are ready in time and every second one while they are not (pace.h). */
 #define FC_CLOCK_COUNTER 0x007C8B4Du  /* byte: a performance counter is in use */
 #ifdef __SWITCH__
-static int g_fps_limit = 0, g_fps_auto = 1;
+/* On a console the game's own loop is the default until the rest has been
+ * seen to work on one (docs/bringup.md, 24): --fps auto is the even pace,
+ * --fps 0 the display's rate with no loop. */
+static int g_fps_limit = -1, g_fps_auto = 0;
 #else
 static int g_fps_limit = 125;         /* the game's own ceiling */
 static int g_fps_auto;
@@ -699,6 +702,7 @@ static void perf_frame(void) {
         fprintf(stderr, "[perf]   of the drawing: finding the program and texture %.1f, state %.1f, uniforms %.1f, vertices %.1f, the call %.1f\n",
                 (double)p.phase_ns[0] * per, (double)p.phase_ns[1] * per, (double)p.phase_ns[2] * per, (double)p.phase_ns[3] * per, (double)p.phase_ns[4] * per);
     fprintf(stderr, "[perf]   files: %u reads, %.1f MB, %.0f ms\n", p.reads, (double)p.read_bytes / 1048576.0, (double)p.read_ns / 1e6);
+    if (p.skipped) fprintf(stderr, "[perf]   %u draws, clears or presents were not done: another thread kept the graphics context\n", p.skipped);
     since = now, longest = 0, frames = over33 = over50 = 0;
 }
 
@@ -961,6 +965,11 @@ int main(int argc, char** argv) {
 #ifdef __SWITCH__
     static char text[2048];
     static char* words[64];
+    /* What only a console can show to be wrong is off there until it has been
+     * seen to be right on one; args.txt switches each on (--stream, --aside,
+     * --fps auto). Before the first thread of the host's own is started. */
+    hle_d3d9_stream = 0, hle_threads_aside = 0;
+    hle_d3d9_watch_picture = 120;     /* and the log is told when the picture goes black: nobody else can say */
     switch_start(argc, argv);
     /* The console gives a core's time by turns only to threads of priority
      * 59, which is where the C library starts every thread but this one. The
@@ -990,6 +999,12 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--watch") && i + 1 < argc) g_watch = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--perf") && i + 1 < argc) g_perf_s = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--perf-detail")) perf_detail = 1;
+        else if (!strcmp(argv[i], "--stream")) hle_d3d9_stream = 1;
+        else if (!strcmp(argv[i], "--no-stream")) hle_d3d9_stream = 0;
+        else if (!strcmp(argv[i], "--gl-plain")) hle_d3d9_plain = 1;
+        else if (!strcmp(argv[i], "--aside")) hle_threads_aside = 1;
+        else if (!strcmp(argv[i], "--no-aside")) hle_threads_aside = 0;
+        else if (!strcmp(argv[i], "--watch-picture") && i + 1 < argc) hle_d3d9_watch_picture = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--fps") && i + 1 < argc) {
             g_fps_auto = !strcmp(argv[++i], "auto");
             if (!g_fps_auto) g_fps_limit = atoi(argv[i]);
@@ -1011,6 +1026,11 @@ int main(int argc, char** argv) {
     if (g_fps_limit > 0 && g_fps_limit <= 60 && 60 % g_fps_limit == 0) hle_d3d9_vsync = 60 / g_fps_limit, g_fps_limit = 0;
 #endif
     if (g_fps_auto) g_fps_limit = 0, hle_d3d9_vsync = 1;      /* the display is the limit, and Present waits for it */
+    fprintf(stderr, "[host] frames: %s; vertices %s; draws say %s; other threads %s\n",
+            g_fps_auto ? "the display's rate or half of it (--fps auto)" : g_fps_limit < 0 ? "the game's own limiter" :
+            g_fps_limit == 0 ? "no limit but the display's" : "the host's limiter",
+            hle_d3d9_stream ? "in one stream" : "in a buffer a draw (--no-stream)", hle_d3d9_plain ? "everything (--gl-plain)" : "what changed",
+            hle_threads_aside ? "kept off the first one's core" : "left where they start (--no-aside)");
     if (g_shots) mkdir(g_shots, 0755);
     /* The game's folder is the working directory (the game counts on it):
      * SoraVoice's files are looked for there, then the mod folders. */
@@ -1036,6 +1056,7 @@ int main(int argc, char** argv) {
     if (!exe) {
         fprintf(stderr, "usage: trails-portable [--imports] [--saves DIR] [--headless] [--frames N]\n"
                         "                       [--shots DIR] [--shot-every N] [--watch S] [--perf S] [--perf-detail]\n"
+                        "                       [--stream | --no-stream] [--gl-plain] [--aside | --no-aside] [--watch-picture N]\n"
                         "                       [--fps N (0 = no limit) | auto] [--original-limiter] <path to ed6_win_DX9.exe>\n");
         return 1;
     }
