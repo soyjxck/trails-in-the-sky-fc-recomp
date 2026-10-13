@@ -981,6 +981,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--stream")) hle_d3d9_stream = 1;
         else if (!strcmp(argv[i], "--no-stream")) hle_d3d9_stream = 0;
         else if (!strcmp(argv[i], "--gl-plain")) hle_d3d9_plain = 1;
+        else if (!strcmp(argv[i], "--read-quarter")) hle_d3d9_read_quarter = 1;
         else if (!strcmp(argv[i], "--aside")) hle_threads_aside = 1;
         else if (!strcmp(argv[i], "--no-aside")) hle_threads_aside = 0;
         else if (!strcmp(argv[i], "--watch-picture") && i + 1 < argc) hle_d3d9_watch_picture = atoi(argv[++i]);
