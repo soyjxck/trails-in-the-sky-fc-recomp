@@ -685,9 +685,46 @@ static void perf_frame(void) {
     since = now, longest = 0, frames = over33 = over50 = 0;
 }
 
+/* ---- the game's own state, for a fault only a console shows (--watch-game N) --------
+ * Every N frames, when any of it has changed: the screen fade (mode 1 in, 3
+ * to a colour, 2 held; its level out of 255 and where it is going), the frame
+ * clock (the last update's milliseconds, the scaled step, the scale), whether
+ * the game thinks its window active and whether the pointer drives its menus,
+ * and every window the game is drawing: its flags and how far its fade has
+ * got (0x38FC and 0x38DC in the game's CWindow; flags 2 opening, 4 open, 8
+ * closing, 0x10 closed, 0x80 not attended to, 0x800 fading in). */
+#define FC_FADE_LEVEL   0x0079A9F4u   /* float */
+#define FC_FADE_STEP    0x0079AA04u   /* float, a millisecond */
+#define FC_FADE_TARGET  0x0079AA0Cu   /* int */
+#define FC_FADE_MODE    0x0079AA12u   /* byte */
+#define FC_GAME_ACTIVE  0x00557E5Fu   /* byte */
+#define FC_FRAME_MS     0x006D9E9Cu   /* int: the clock's last update */
+#define FC_FRAME_STEP   0x006D9EBCu   /* float: what the game moves by */
+#define FC_TIME_SCALE   0x006D9EC4u   /* float */
+#define FC_REDRAW_LIST  0x007D1C00u   /* 32 window pointers */
+static unsigned g_game_watch;
+static float guest_float(uint32_t at) { float f; uint32_t u = MEM32(at); memcpy(&f, &u, 4); return f; }
+static void game_watch(unsigned frame) {
+    static char last[700];
+    char now[700];
+    int n = snprintf(now, sizeof now, "fade mode %u, level %.0f of %d (step %.3f a ms); the window %s; the pointer %u/%u; time x%.2f; windows",
+                     (unsigned)MEM8(FC_FADE_MODE), (double)guest_float(FC_FADE_LEVEL), (int)MEM32(FC_FADE_TARGET), (double)guest_float(FC_FADE_STEP),
+                     MEM8(FC_GAME_ACTIVE) ? "active" : "NOT active", (unsigned)MEM8(FC_MOUSE_IN_USE), (unsigned)MEM8(FC_MOUSE_MODE),
+                     (double)guest_float(FC_TIME_SCALE));
+    for (uint32_t i = 0; i < 32 && n < (int)sizeof now - 40; i++) {
+        uint32_t w = MEM32(FC_REDRAW_LIST + 4 * i), base, size;
+        if (w < 0x10000u || !hle_guest_region_of(w, &base, &size) || w + 0x3970u > base + size) continue;      /* not a window's worth of memory */
+        n += snprintf(now + n, sizeof now - (size_t)n, " %06X:%X/%.0f", w, (unsigned)MEM16(w + 0x38FC), (double)guest_float(w + 0x38DC));
+    }
+    if (!strcmp(now, last)) return;
+    memcpy(last, now, sizeof last);
+    fprintf(stderr, "[game] frame %u (%u ms, step %.1f): %s\n", frame, (unsigned)MEM32(FC_FRAME_MS), (double)guest_float(FC_FRAME_STEP), now);
+}
+
 static unsigned g_shot_every, g_frames, g_frame_now;
 static void on_frame(unsigned frame) {
     g_frame_now = frame;
+    if (g_game_watch && frame % g_game_watch == 0) game_watch(frame);
     if (g_perf_s) {
         static uint64_t last;
         uint64_t now = hle_now_ns();
@@ -948,7 +985,8 @@ int main(int argc, char** argv) {
      * seen to be right on one; args.txt switches each on (--stream, --aside,
      * --fps 0). Before the first thread of the host's own is started. */
     hle_d3d9_stream = 0, hle_threads_aside = 0;
-    hle_d3d9_watch_picture = 120;     /* and the log is told when the picture goes black: nobody else can say */
+    hle_d3d9_watch_picture = 30;      /* and the log is told how bright the picture is: nobody else can say */
+    g_game_watch = 15;                /* and what the game's fade and its windows are doing */
     switch_start(argc, argv);
     /* The console gives a core's time by turns only to threads of priority
      * 59, which is where the C library starts every thread but this one. The
@@ -985,6 +1023,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--aside")) hle_threads_aside = 1;
         else if (!strcmp(argv[i], "--no-aside")) hle_threads_aside = 0;
         else if (!strcmp(argv[i], "--watch-picture") && i + 1 < argc) hle_d3d9_watch_picture = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--watch-game") && i + 1 < argc) g_game_watch = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--fps") && i + 1 < argc) g_fps_limit = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1;
         else if (!strcmp(argv[i], "--profile") && i + 1 < argc) profile = argv[++i];
@@ -1034,6 +1073,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: trails-portable [--imports] [--saves DIR] [--headless] [--frames N]\n"
                         "                       [--shots DIR] [--shot-every N] [--watch S] [--perf S] [--perf-detail]\n"
                         "                       [--stream | --no-stream] [--gl-plain] [--aside | --no-aside] [--watch-picture N]\n"
+                        "                       [--watch-game N] [--read-quarter]\n"
                         "                       [--fps N (0 = no limit)] [--original-limiter] <path to ed6_win_DX9.exe>\n");
         return 1;
     }
