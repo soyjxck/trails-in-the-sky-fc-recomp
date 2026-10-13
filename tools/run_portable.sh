@@ -10,7 +10,8 @@
 # the log to show, ARGS more options for the host. SOUND=1 switches music and
 # sound effects on in the run's settings; nothing is heard either way (SDL's
 # dummy audio driver takes the samples). MOVIES=1 switches the logo and
-# opening movies on.
+# opening movies on. INI="Name=value ..." sets other lines of the run's
+# config.ini (INI="ShadowQuality=0 FpsMode=1").
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FRAMES=${1:-600}
@@ -26,6 +27,9 @@ fi
 if [ -n "${MOVIES:-}" ] && [ -f "$RUN/saves/FALCOM/ED6/config.ini" ]; then
   sed -i 's/^LogoPlayOff=1/LogoPlayOff=0/; s/^OpeningPlayOff=1/OpeningPlayOff=0/' "$RUN/saves/FALCOM/ED6/config.ini"
 fi
+for kv in ${INI:-}; do
+  [ -f "$RUN/saves/FALCOM/ED6/config.ini" ] && sed -i "s/^${kv%%=*}=.*/$kv/" "$RUN/saves/FALCOM/ED6/config.ini"
+done
 cd "${GAME:-$ROOT/Trails in the Sky FC}"
 code=0
 export SDL_AUDIODRIVER=${SDL_AUDIODRIVER:-dummy}      # a test run is never heard

@@ -25,6 +25,7 @@ GEN=${GEN:-$ROOT/src/recomp/gen}
 HLE=$ROOT/pcrecomp/runtime/win32hle
 JOBS=${JOBS:-$(nproc)}
 OPT=${OPT:--O1}
+HOST_OPT=${HOST_OPT:--O1}
 mkdir -p "$OUT/obj"
 
 case "$TARGET" in
@@ -58,7 +59,9 @@ linux)
 switch)
   : "${DEVKITPRO:=/opt/devkitpro}"
   CC=$DEVKITPRO/devkitA64/bin/aarch64-none-elf-gcc
-  ARCH="-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE"
+  # Frame pointers are kept: the profiler (--profile) follows them to say who
+  # called what it found the game in.
+  ARCH="-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -fno-omit-frame-pointer"
   PKG=$DEVKITPRO/portlibs/switch/bin/aarch64-none-elf-pkg-config
   CFLAGS="$ARCH -D__SWITCH__ -DHLE_WITH_LIBVORBIS -ffunction-sections -I$DEVKITPRO/libnx/include -I$DEVKITPRO/portlibs/switch/include $($PKG --cflags sdl2 SDL2_ttf)"
   LIBS="-specs=$DEVKITPRO/libnx/switch.specs $ARCH -L$DEVKITPRO/libnx/lib $($PKG --libs --static sdl2 SDL2_ttf) -lEGL -lGLESv2 -lglapi -ldrm_nouveau -L$DEVKITPRO/portlibs/switch/lib -lvorbisfile -lvorbis -logg -lnx -lm"
@@ -88,20 +91,30 @@ for f in "$GEN"/*.c; do
 done
 for f in "$HLE"/*.c; do
   case "$f" in *_selftest.c) continue ;; esac
-  echo "$OUT/obj/hle_$(basename "$f" .c).o $f -O1 -Wall -Wno-unused-function -Wno-unused-but-set-variable" >> "$LIST"
+  echo "$OUT/obj/hle_$(basename "$f" .c).o $f $HOST_OPT -Wall -Wno-unused-function -Wno-unused-but-set-variable" >> "$LIST"
 done
 # guest C++ exceptions: the one file of native32 that is not Windows' own
-echo "$OUT/obj/eh32.o $ROOT/pcrecomp/runtime/native32/eh32.c -O1 -Wall -Wno-unused-function" >> "$LIST"
+echo "$OUT/obj/eh32.o $ROOT/pcrecomp/runtime/native32/eh32.c $HOST_OPT -Wall -Wno-unused-function" >> "$LIST"
 for f in "$ROOT"/src/portable/*.c "$ROOT"/src/mods/*.c; do
-  echo "$OUT/obj/host_$(basename "$f" .c).o $f -O1 -Wall" >> "$LIST"
+  echo "$OUT/obj/host_$(basename "$f" .c).o $f $HOST_OPT -Wall" >> "$LIST"
 done
 
-export CC CFLAGS INC DEFS
+# A source is compiled again when it, or a header it may include, is newer
+# than its object: the lifted C includes only the lifter's headers and its
+# own, everything else may include any of them. (A header that changes the
+# shape of something shared, compiled into half the objects, is a fault found
+# days later.) Other flags are not noticed: a build with another OPT wants a
+# folder of its own.
+DEPS_GEN="$ROOT/pcrecomp/runtime/recomp32 $GEN"
+DEPS_HOST="$DEPS_GEN $HLE $ROOT/pcrecomp/runtime/native32 $ROOT/src/portable $ROOT/src/mods"
+export CC CFLAGS INC DEFS DEPS_GEN DEPS_HOST
 
 # xargs runs the compilers in parallel; sh -c gets one source line each.
 < "$LIST" xargs -P "$JOBS" -L 1 sh -c '
   obj=$0; src=$1; shift
-  if [ ! -f "$obj" ] || [ "$src" -nt "$obj" ]; then
+  case "$(basename "$obj")" in gen_*) deps=$DEPS_GEN ;; *) deps=$DEPS_HOST ;; esac
+  # shellcheck disable=SC2086
+  if [ ! -f "$obj" ] || [ "$src" -nt "$obj" ] || [ -n "$(find $deps -maxdepth 1 -name "*.h" -newer "$obj" -print -quit)" ]; then
     $CC $CFLAGS $INC $DEFS "$@" -c "$src" -o "$obj" || { echo "FAILED $src" >&2; exit 255; }
     echo "  $(basename "$src")"
   fi'
