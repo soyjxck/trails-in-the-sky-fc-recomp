@@ -95,7 +95,7 @@ for f in "$HLE"/*.c; do
 done
 # guest C++ exceptions: the one file of native32 that is not Windows' own
 echo "$OUT/obj/eh32.o $ROOT/pcrecomp/runtime/native32/eh32.c $HOST_OPT -Wall -Wno-unused-function" >> "$LIST"
-for f in "$ROOT"/src/portable/*.c "$ROOT"/src/mods/*.c; do
+for f in "$ROOT"/src/portable/*.c "$ROOT"/src/mods/*.c "$ROOT"/src/common/*.c; do
   echo "$OUT/obj/host_$(basename "$f" .c).o $f $HOST_OPT -Wall" >> "$LIST"
 done
 

@@ -34,6 +34,7 @@ add_executable(trails
   src/runtime/voice_out.c
   src/mods/vfs.c
   src/mods/voice.c
+  src/common/crt.c
   src/ui/settings_menu.cpp
   third_party/imgui/imgui.cpp
   third_party/imgui/imgui_draw.cpp
@@ -66,7 +67,7 @@ if(MSVC_VERSION GREATER_EQUAL 1950)
 endif()
 set_source_files_properties(${GEN_SOURCES} PROPERTIES COMPILE_OPTIONS "/w;${GEN_OPT}")
 set_source_files_properties(src/runtime/host.c src/runtime/profile.c src/runtime/voice_out.c
-                            src/mods/vfs.c src/mods/voice.c
+                            src/mods/vfs.c src/mods/voice.c src/common/crt.c
                             PROPERTIES COMPILE_OPTIONS "/W3")
 target_link_libraries(trails PRIVATE user32 gdi32 kernel32 winmm ole32 dbghelp psapi dsound shell32)
 # The exe's own imports are system DLLs and come from the system folder, also

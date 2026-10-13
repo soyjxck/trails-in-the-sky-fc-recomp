@@ -967,3 +967,133 @@ have it, and it is not explained.
 
 Vertical sync in a window is section 21's: 32 frames a second before, 120
 after.
+
+## 23. Slow out of doors on the Switch: where a frame goes
+
+On a console the port "is perfect but stuttering", and worse out of doors
+than in. A console has no debugger and no profiler, so the first work was
+instruments, and they are in the portable host for good:
+
+- `--perf S` (ten seconds on the Switch unless told otherwise) writes to the
+  log how many frames a second, the longest frame, how long the game's
+  thread was at work in a frame, and the frame's split into the game,
+  drawing, clearing, presenting and waiting. `--perf-detail` splits the
+  drawing into finding the program, state, uniforms, vertices and the call.
+- `--profile FILE` samples the game's thread. On Linux a timer's signal does
+  it, with the callers from the unwinder. On the Switch a thread of the
+  host's pauses the game's thread five hundred times a second, reads its
+  registers, follows the frame records up its stack and lets it go; the
+  samples are added to the file every ten seconds. `tools/profile_portable.py`
+  names them from `trails.elf`, and since the graphics driver is linked into
+  the program, Mesa's functions are named like the game's.
+- `HLE_D3D9_CENSUS=N` says what the draws of every Nth frame were;
+  `HLE_D3D9_FILLS=1` what the first four hundred texture fills were of.
+- `--fps 0` takes the wait between frames out, so a frame is as long as the
+  work in it.
+
+All of it runs under Ryujinx, where the times are the emulator's but the
+program is the console's, byte for byte, driver included: which functions the
+time is in can be read there. The scene measured is a dungeon floor with the
+party walking about: 870 draws a frame.
+
+What was found, in the order it was found:
+
+**Every draw said everything.** The Direct3D layer's GL half set the whole
+of the pixel state, every uniform and every vertex array for each draw, and
+made a buffer for each draw's vertices. The census says why that hurts here:
+of 870 draws only about 75 have the program, texture and state of the draw
+before them, so nothing can be drawn together; the map is a pile of small
+pieces, each with its own texture. A draw now sends only what differs
+(pcrecomp's `d3d9_gl.c`: the state GL was last told, the uniforms a program
+was last sent, a serial for the vertex shader's constants, one stream for
+vertices that come with their draw, the layout of a vertex worked out once
+for each pairing of a declaration with a shader). On Linux the drawing went
+from between 3.5 and 5 milliseconds a frame to 2.6, of which 2.4 is the
+driver's own draw call and 0.3 the layer.
+
+**An import was three lookups.** An indirect call searched the dispatch table
+(thirteen probes), found nothing for an import, and then asked for a shim.
+The table is flat now and the first question answers both.
+
+**The music held the machine.** `ov_read` decoded with the machine lock
+held: the game's own thread stood still for every burst of decoding. It is
+given up around the decoder now. (And threads other than the game's keep off
+its core on the Switch.)
+
+**The wait for the display is not in Present.** The profile under Ryujinx
+has a quarter of the game thread's samples in `svcWaitSynchronization`, under
+`nwindowDequeueBuffer`, under Mesa's `st_framebuffer_validate`, under
+`eglMakeCurrent`'s side of the first thing a frame draws: the driver takes
+its next buffer, and waits for the display, when the frame after the swap
+begins. So "presenting" is short and the wait turns up in the game's clear.
+A frame's work is therefore taken as the processor time its thread had
+(`svcGetInfo`'s thread tick count; `CLOCK_THREAD_CPUTIME_ID` on Linux), which
+no wait is in.
+
+**Forty-odd frames a second is a stutter.** Where Present waits for the
+display, a scene that cannot quite be drawn at sixty comes out as frames of
+one refresh and of two, mixed. `src/portable/pace.c` (`--fps auto`, the
+Switch's default) presents at every refresh while frames are ready in time,
+at every second one when eighteen of the last hundred and twenty came late,
+and goes back up when the thread's work has stayed under thirteen
+milliseconds a frame for six seconds; going up and falling again at once
+doubles that wait. `--fps 60` and `--fps 30` pin it.
+
+**Sprite sheets.** While the party walks, ten to twenty textures a second are
+filled: 256 by 256, four bits a channel, the people's sprite sheets, which
+the game keeps a few dozen of and refills as they turn. A fill was two passes
+over the pixels a byte at a time; it is one now, sixteen pixels at a time on
+arm64.
+
+**The C runtime, lifted.** The top lifted function in the profile was
+`_isnan`, with `_finite` and the compiler's float to 64-bit integer helper
+not far behind: the game's culling asks whether each plane distance is a
+number, twice over, and casts through `__int64` in 249 places. These are
+written for SSE2, and an SSE register is memory to lifted code; a call into
+lifted code also hands all eight registers over and back. They are the
+host's now (`src/common/crt.c`, HOOKS in `run_lift.py`), `memset` with them,
+and the three small ones are done in place where they are called
+(INLINES): 458 call sites.
+
+Smaller: a guest pointer is turned into the host's in line; a call out of
+lifted code keeps its notes for `--watch` only when someone watches (a
+thread-local variable is a function call on the Switch); matrix products go
+a row at a time on arm64.
+
+What was tried and left: `-O2` for the lifted code hangs the game after a
+save is loaded; with `-fno-strict-aliasing -fwrapv
+-fno-delete-null-pointer-checks` it runs, and is no faster on x86-64.
+
+Where that leaves a frame, under Ryujinx, on the walk: the game's thread at
+work for about twelve milliseconds of 16.7, sixty frames a second held. Of
+the work, a third is lifted code, a fifth Mesa's side of the draws (state
+validation, mostly for the texture each draw changes), and the layer's own
+part of a draw a twentieth. Linux, with no wait between frames: 150 frames a
+second on the software renderer, the game's thread at work 5.3 ms a frame.
+Windows is unchanged but for the C runtime functions, which are the host's
+there too.
+
+Not known yet: the same numbers from a console. Its processor is several
+times slower than the emulator's host, so sixty out of doors is not to be
+expected from this alone; an even thirty is what the pacing is for. The log
+of a run on one (`trails.log`, the `[perf]` lines) is the next thing to
+read, and a profile with it (`--profile sdmc:/switch/trails/profile.txt` in
+`args.txt`, then `tools/profile_portable.py trails.elf profile.txt`).
+
+What would move it further, in the order of what the profile promises:
+
+- **SSE registers as locals.** The game was built for SSE2, and every scalar
+  float operation of the lifted code reads and writes the global register
+  file. The integer registers are locals of each function already
+  (`RECOMP_LOCAL_REGS`); doing the same for `_xmm` needs the lifter to know
+  which of them a call takes and returns.
+- **The hot functions natively**: 0x00453890, 0x00453AD0 and 0x00453D20
+  (2 to 3% each), 0x00446A60 and 0x00446D60, 0x00465400.
+- **Fewer draws.** Nothing in the layer can merge draws that each have a
+  texture of their own, and none of the game's settings takes any away:
+  the count is the same with shadows off and with `LowEffect=1`.
+
+One setting of the game's does help, on the processor's side:
+`ShadowQuality=0` in config.ini (no shadows under the people) takes a sixth
+off the game's own part of a frame on Linux, 1.9 ms against 2.3.
+`ShadowQuality=1` and `LowEffect=1` change nothing that can be measured.

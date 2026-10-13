@@ -35,6 +35,13 @@ The logo and opening movies play too. The game's pointer shows only while a
 pointer is used: a mouse, or the Switch's touch screen (touch a menu item to
 choose it). The keyboard is not there yet (docs/bringup.md, 13 to 21).
 
+On the Switch the port presents at the display's sixty frames a second
+while it can and at an even thirty while it cannot (`--fps auto`; `--fps 60`
+or `--fps 30` in `args.txt` beside the program pins it), and `trails.log`
+says every ten seconds where a frame's time went. `--profile FILE` samples
+the game's thread, there and on Linux, and `tools/profile_portable.py` names
+the result (docs/bringup.md, 23).
+
 See [docs/bringup.md](docs/bringup.md) for every wall on the way.
 
 ## Getting started
@@ -145,6 +152,8 @@ run with all of the above set up; put a `config.ini` and saves for it in
 | `src/mods/vfs.c`, `tools/archive_diff.py` | mods as loose files, and making one from a whole-archive mod |
 | `src/ui/settings_menu.cpp` | the settings menu (Dear ImGui, in `third_party/imgui`, on the game's own Direct3D device) |
 | `src/mods/voice.c` | SoraVoice's voices, for every host; `src/runtime/voice_out.c` and `src/portable/voice_out.c` read and play the files |
+| `src/common/crt.c` | pieces of the game's C runtime done by the host, on every host |
+| `tools/profile_portable.py` | names for a profile of the portable host |
 | `config/function_starts.json` | the function starts the catalog is seeded with |
 | `tests/`, `tools/run_test.ps1` | play scripts and the unattended run that plays them |
 | `pcrecomp/` | the toolkit (submodule) |

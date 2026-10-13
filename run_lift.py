@@ -61,7 +61,12 @@ RUN_SEEDS = []
 #   0x004FD597  _CxxThrowException. The C runtime is linked into the exe, so
 #               a throw is not an import native32 can answer by name: it is
 #               this function, which would raise on the host's SEH chain.
-HOOKS = {0x004FD597}
+#   0x00504ABF, 0x00504A01, 0x00522510, 0x004FE110
+#               _isnan, _finite, the float to 64-bit integer helper and
+#               memset: C runtime functions that are at the top of a profile
+#               as lifted SSE2 code, and a line each as what they mean
+#               (src/common/crt.c).
+HOOKS = {0x004FD597, 0x00504ABF, 0x00504A01, 0x00522510, 0x004FE110}
 
 # Functions the host wraps: the lift is emitted as fc_orig_XXXXXXXX and the
 # function itself calls the host's fc_wrap_XXXXXXXX(void), which decides
@@ -92,6 +97,33 @@ PATCHES = {
     0x004E2EC4: '{ int fc_voice_playing(void); if (fc_voice_playing()) goto L_004E2EE2; }',
     0x004E2DDD: '{ void fc_voice_page(void); fc_voice_page(); }',
 }
+
+
+# Calls done in place. A call into lifted code hands every register over and
+# takes it back, which for a function of three instructions that is called
+# from a loop is most of the cost (docs/bringup.md, 23). A call to one of
+# these is replaced, where it is made, by C that leaves in eax and edx what the
+# function leaves there; the functions themselves stay (HOOKS above) for
+# whatever reaches them some other way.
+#   0x00504ABF  _isnan(double): the argument is at the top of the stack
+#   0x00504A01  _finite(double)
+#   0x00522510  (__int64)float: xmm0 in, edx:eax out
+INLINES = {
+    0x00504ABF: '{ uint32_t _hi = MEM32(esp + 4); eax = (_hi & 0x7FF00000u) == 0x7FF00000u && ((_hi & 0x000FFFFFu) | MEM32(esp)) != 0; }',
+    0x00504A01: 'eax = (MEM32(esp + 4) & 0x7FF00000u) != 0x7FF00000u;',
+    0x00522510: '{ float _f = _xmm[0].f32[0]; int64_t _v = INT64_MIN; '
+                'if (_f >= -9223372036854775808.0f && _f < 9223372036854775808.0f) _v = (int64_t)_f; '
+                'eax = (uint32_t)(uint64_t)_v; edx = (uint32_t)((uint64_t)_v >> 32); }',
+}
+_CALL = re.compile(r'RECOMP_CALL\(\w+\); (/\* 0x[0-9A-F]{8}: call 0x([0-9a-f]+) \*/)\n[ \t]*RECOMP_FLAGS_IN\(\);')
+
+
+def inline_calls(body):
+    """Replace each call to a function in INLINES, and the flags it would hand back, by its C."""
+    def one(m):
+        c = INLINES.get(int(m.group(2), 16))
+        return '%s %s' % (c, m.group(1)) if c else m.group(0)
+    return _CALL.sub(one, body)
 
 
 def apply_patches(body, patches):
@@ -282,6 +314,7 @@ def main():
             body = (lift_function_linear(lifter, inner, insns, leaders, addr, eh_resume=eh) if insns
                     else 'void %s(void) { }\n' % inner)
             body = apply_patches(body, {va: c for va, c in patches.items() if reached and va in reached})
+            body = inline_calls(body)
             if addr in WRAPS:
                 body += ('\nextern void fc_wrap_%08X(void);\nvoid %s(void) { fc_wrap_%08X(); }\n'
                          % (addr, name, addr))
