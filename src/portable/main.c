@@ -472,6 +472,9 @@ static uint64_t pad_buttons(void) {
  * is in use, from a mouse's or a finger's report (win32hle counts them; a
  * touch screen is a mouse there) until the next button. */
 static int g_pointer_live;
+/* The buttons that were down when the host's movie ended, kept from the game
+ * until they are let go (fc_wrap_004886D0 says why). */
+static uint64_t g_after_movie;
 
 void fc_wrap_004802C0(void) {
     static unsigned seen;
@@ -479,6 +482,8 @@ void fc_wrap_004802C0(void) {
     unsigned reports = hle_input_pointer_events();
     if (reports != seen) seen = reports, g_pointer_live = 1;
     uint64_t held = g_step < g_nsteps ? scripted_buttons() : pad_buttons();
+    g_after_movie &= held;
+    held &= ~g_after_movie;
     if (held) g_pointer_live = 0;
     if (!g_pointer_live) MEM8(FC_MOUSE_IN_USE) = 0, MEM8(FC_MOUSE_MODE) = 0;
     g_eax |= (uint32_t)held;      /* beside what the poll found itself, which here is only the pointer's buttons */
@@ -578,12 +583,24 @@ void fc_wrap_004C11A0(void) {
  * settings: 0 is none, 1 playing (drawn and advanced each frame, on
  * DirectShow, which is not here), 2 over. Everything that waits for a movie
  * waits for that 2: the logo's and the opening's own loop (0x00488050), and
- * a scene's script, which asks for it and then stops the movie itself. */
+ * a scene's script, which asks for it and then stops the movie itself.
+ *
+ * The button that ended the movie must not reach the game. Its loop reads
+ * the buttons once more before it looks at the state, and a confirm or
+ * cancel newly down there is its own way of ending a movie: it starts a fade
+ * to black and stops the movie when the fade is through. With the movie
+ * already over nothing waits for that fade, and it ran on over the title
+ * screen, which opened and then went black until a save was loaded. */
 #define FC_MOVIE_STATE 0x0079AA3Eu    /* byte */
 int fc_movie_play(const char* path, int (*skip)(void));
+/* --script-in-movies: a play script's buttons reach a movie too (its clock
+ * then runs while one plays), so that a test can end a movie as a player
+ * does. Without it a script waits a movie out. */
+static int g_script_in_movies;
+static uint64_t buttons_now(void) { return g_script_in_movies && g_step < g_nsteps ? scripted_buttons() : pad_buttons(); }
 static int movie_skip(void) {
     static uint64_t before = ~0ull;
-    uint64_t now = pad_buttons() & (B_CONFIRM | B_CANCEL | B_PAD7), pressed = now & ~before;
+    uint64_t now = buttons_now() & (B_CONFIRM | B_CANCEL | B_PAD7), pressed = now & ~before;
     before = now;                                    /* a button still down from before the movie does not count */
     return pressed != 0;
 }
@@ -593,6 +610,7 @@ void fc_wrap_004886D0(void) {
     for (char* c = name; *c; c++) if (*c == '\\') *c = '/';
     movie_skip();
     fc_movie_play(name, movie_skip);
+    g_after_movie = buttons_now();
     MEM8(FC_MOVIE_STATE) = 2;
     g_esp += 4;                                      /* the return address: MoviePlay takes nothing from the stack */
 }
@@ -1020,10 +1038,12 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--no-stream")) hle_d3d9_stream = 0;
         else if (!strcmp(argv[i], "--gl-plain")) hle_d3d9_plain = 1;
         else if (!strcmp(argv[i], "--read-quarter")) hle_d3d9_read_quarter = 1;
+        else if (!strcmp(argv[i], "--upload") && i + 1 < argc) hle_d3d9_upload = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--aside")) hle_threads_aside = 1;
         else if (!strcmp(argv[i], "--no-aside")) hle_threads_aside = 0;
         else if (!strcmp(argv[i], "--watch-picture") && i + 1 < argc) hle_d3d9_watch_picture = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--watch-game") && i + 1 < argc) g_game_watch = (unsigned)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--script-in-movies")) g_script_in_movies = 1;
         else if (!strcmp(argv[i], "--fps") && i + 1 < argc) g_fps_limit = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1;
         else if (!strcmp(argv[i], "--profile") && i + 1 < argc) profile = argv[++i];
@@ -1042,11 +1062,13 @@ int main(int argc, char** argv) {
 #ifdef __SWITCH__
     if (g_fps_limit > 0 && g_fps_limit <= 60 && 60 % g_fps_limit == 0) hle_d3d9_vsync = 60 / g_fps_limit, g_fps_limit = 0;
 #endif
-    fprintf(stderr, "[host] frames: %s; vertices %s; draws say %s; other threads %s\n",
+    fprintf(stderr, "[host] frames: %s; vertices %s; draws say %s; other threads %s; textures filled again %s, %s (--upload %d)\n",
             g_fps_limit < 0 ? "the game's own limiter" : g_fps_limit > 0 ? "the host's limiter" :
             hle_d3d9_vsync > 1 ? "every second or third of the display's (--fps)" : "no limit but the display's",
             hle_d3d9_stream ? "in one stream" : "in a buffer a draw (--no-stream)", hle_d3d9_plain ? "everything (--gl-plain)" : "what changed",
-            hle_threads_aside ? "kept off the first one's core" : "left where they start (--no-aside)");
+            hle_threads_aside ? "kept off the first one's core" : "left where they start (--no-aside)",
+            hle_d3d9_upload & 1 ? "at four bits a channel where they are" : "at eight bits a channel",
+            hle_d3d9_upload & 2 ? "in place" : "made anew", hle_d3d9_upload);
     if (g_shots) mkdir(g_shots, 0755);
     /* The game's folder is the working directory (the game counts on it):
      * SoraVoice's files are looked for there, then the mod folders. */
@@ -1073,7 +1095,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: trails-portable [--imports] [--saves DIR] [--headless] [--frames N]\n"
                         "                       [--shots DIR] [--shot-every N] [--watch S] [--perf S] [--perf-detail]\n"
                         "                       [--stream | --no-stream] [--gl-plain] [--aside | --no-aside] [--watch-picture N]\n"
-                        "                       [--watch-game N] [--read-quarter]\n"
+                        "                       [--watch-game N] [--read-quarter] [--upload 0-3]\n"
                         "                       [--fps N (0 = no limit)] [--original-limiter] <path to ed6_win_DX9.exe>\n");
         return 1;
     }

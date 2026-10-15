@@ -1147,3 +1147,51 @@ black beside it; a console reads the whole of it.
 
 Open: which of the three it is, or what else. The next log from a console
 says.
+
+**Found: none of them, and not the console.** The console's log with the
+game's state in it (`--watch-game`) has the screen fade start towards black
+(mode 3) on the first frame after "stopped by the player", and the title
+opening under it. The game's movie loop (0x00488050) ends a movie its own
+way: it reads the buttons each frame, and a confirm or cancel newly down
+starts a fade to black, after which it stops the movie. Here the host plays
+the whole movie inside MoviePlay and returns with it over; the button that
+ended it was still down at the loop's next reading, so the loop started its
+fade and left, the movie being over already, and nothing came back for the
+fade: it ran on over the title, held at black, until a save's load reset it.
+None of the test runs ended a movie with a button, which is why it was only
+ever seen on a console. The buttons down when a movie ends are now kept from
+the game until they are let go. `--script-in-movies` lets a play script's
+buttons reach a movie, so that a test ends one as a player does.
+
+## 25. A busy street at a third of the frame rate
+
+On a console, save 057 (Grancel, the Queen's birthday fair) ran at 12 to 17
+frames a second a few steps into the fair, with the main thread at work 50
+to 66 ms a frame: the processor, not the graphics chip (a smaller picture
+would change nothing).
+
+The game's people are sprites. Each has a 256x256 texture of four bits a
+channel, and whenever a person's animation moves on a frame the game copies
+the new picture into it with D3DXLoadSurfaceFromSurface. A street of people
+who stand still needs none of that; the fair needs it about 280 times a
+second, whatever the frame rate, so the slower the frames the more of each
+frame it takes, and the frame rate sank until the copying filled the second.
+
+That D3DX function read the source out as four bytes a pixel and wrote it
+back, with a division a channel: about 260,000 a copy. Between two surfaces
+of the same format that is the identity (checked for every value of the
+16-bit formats), so it is now the rows copied as they are (`d3d9_surface_copy`
+in the fork). On Linux in the fair at 30 frames a second the game's part of a
+frame went from 3.7 to 2.3 ms, the same as at 125. Under Ryujinx, standing in
+the fair: a frame's work 19.5 to 16.5 ms.
+
+The texture GL is sent afterwards is still the whole 256x256 at eight bits a
+channel. Four bits a channel (GL_RGBA4) would be half the bytes, but both
+Mesa's llvmpipe and the console's nouveau convert it pixel by pixel on the
+way in (0.47 ms a page against 0.25 under Ryujinx), so it is a switch
+(`--upload`, bit 1) and off; a page filled again now goes into the texture GL
+has (`glTexSubImage2D`, bit 2) rather than being made anew.
+
+The test: `run/saves_057` (a copy of the save, made from the card), a script
+that loads it and walks south-east into the fair, `SAVES_BASE` in
+`tools/run_portable.sh` for a run from other saves than `run/saves_base`.

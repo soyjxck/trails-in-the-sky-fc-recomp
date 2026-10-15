@@ -11,7 +11,8 @@
 # sound effects on in the run's settings; nothing is heard either way (SDL's
 # dummy audio driver takes the samples). MOVIES=1 switches the logo and
 # opening movies on. INI="Name=value ..." sets other lines of the run's
-# config.ini (INI="ShadowQuality=0 FpsMode=1").
+# config.ini (INI="ShadowQuality=0 FpsMode=1"). SAVES_BASE is another folder
+# to copy the saves from.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FRAMES=${1:-600}
@@ -20,7 +21,8 @@ OUT=${3:-$ROOT/build-linux}
 RUN=${RUN_DIR:-$ROOT/run/portable}
 rm -rf "$RUN/saves" "$RUN/shots"
 mkdir -p "$RUN/shots"
-if [ -d "$ROOT/run/saves_base" ]; then cp -r "$ROOT/run/saves_base" "$RUN/saves"; else mkdir -p "$RUN/saves"; fi
+BASE=${SAVES_BASE:-$ROOT/run/saves_base}
+if [ -d "$BASE" ]; then cp -r "$BASE" "$RUN/saves"; else mkdir -p "$RUN/saves"; fi
 if [ -n "${SOUND:-}" ] && [ -f "$RUN/saves/FALCOM/ED6/config.ini" ]; then
   sed -i 's/^\(BgmOff\|SeOff\)=1/\1=0/' "$RUN/saves/FALCOM/ED6/config.ini"
 fi
