@@ -1192,6 +1192,27 @@ way in (0.47 ms a page against 0.25 under Ryujinx), so it is a switch
 (`--upload`, bit 1) and off; a page filled again now goes into the texture GL
 has (`glTexSubImage2D`, bit 2) rather than being made anew.
 
+What a page costs to send, then, is most of what is left of the fair's
+extra work: 0.25 ms under Ryujinx and about 0.7 ms on the console, some 280
+times a second. But the pictures repeat: a person walking or talking goes
+round the same few. Logged with a hash of each page, 20 s in the fair were
+4,289 fills of 254 different pictures, and a cache of the last 256 pictures
+would have had 94% of them. So a texture that keeps being filled whole is
+looked up by its pixels among the pictures GL has (`d3d9_gl.c`, "pictures GL
+has already": a hash finds the candidate, the bytes are compared in full, so
+a wrong picture cannot be drawn) and drawn with that picture's GL texture,
+nothing sent. 256 pictures at most (64 MB of GL's, 32 MB of copies to compare
+with), the one used longest ago and drawn by nobody making way; a texture
+whose pictures keep missing, as text written afresh does, fills its own for
+a while before it tries again. In the fair under Ryujinx 97% of fills are
+answered so, and the time filling textures fell from 250-290 ms to 43-62 ms
+in five seconds; on Linux from 180-210 to 14-15. `--no-pictures` sends every
+one, and the `[perf]` line says how many fills were answered.
+
+A texture filled again in place now sends only the rectangle written since,
+too (`d3d9_surface_touched`); the game's pages are always written whole, so
+that is for other games and other textures.
+
 The test: `run/saves_057` (a copy of the save, made from the card), a script
 that loads it and walks south-east into the fair, `SAVES_BASE` in
 `tools/run_portable.sh` for a run from other saves than `run/saves_base`.

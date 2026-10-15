@@ -692,9 +692,9 @@ static void perf_frame(void) {
     fprintf(stderr, "[perf]%s %.1f frames a second (%u in %.0f s; the longest %.0f ms; %u over 33 ms, %u over 50 ms)\n", how,
             (double)frames / secs, frames, secs, (double)longest / 1e6, over33, over50);
     fprintf(stderr, "[perf]   a frame %.1f ms, its thread at work for %.1f of them: the game %.1f, drawing %.1f (%u draws; %u programs made in %.0f ms; "
-            "%u textures filled in %.0f ms), clearing %.1f, presenting %.1f (%.1f of it the swap), waiting for its time %.1f\n", frame, worked,
-            frame - draw - show - wait - clear, draw, p.draws / frames, p.programs, (double)p.program_ns / 1e6, p.textures, (double)p.texture_ns / 1e6,
-            clear, show, (double)p.swap_ns * per, wait);
+            "%u textures filled in %.0f ms, %u of them with a picture GL had), clearing %.1f, presenting %.1f (%.1f of it the swap), "
+            "waiting for its time %.1f\n", frame, worked, frame - draw - show - wait - clear, draw, p.draws / frames, p.programs,
+            (double)p.program_ns / 1e6, p.textures, (double)p.texture_ns / 1e6, p.textures_seen, clear, show, (double)p.swap_ns * per, wait);
     if (hle_perf_phases)
         fprintf(stderr, "[perf]   of the drawing: finding the program and texture %.1f, state %.1f, uniforms %.1f, vertices %.1f, the call %.1f\n",
                 (double)p.phase_ns[0] * per, (double)p.phase_ns[1] * per, (double)p.phase_ns[2] * per, (double)p.phase_ns[3] * per, (double)p.phase_ns[4] * per);
@@ -1039,6 +1039,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--gl-plain")) hle_d3d9_plain = 1;
         else if (!strcmp(argv[i], "--read-quarter")) hle_d3d9_read_quarter = 1;
         else if (!strcmp(argv[i], "--upload") && i + 1 < argc) hle_d3d9_upload = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--no-pictures")) hle_d3d9_pictures = 0;
         else if (!strcmp(argv[i], "--aside")) hle_threads_aside = 1;
         else if (!strcmp(argv[i], "--no-aside")) hle_threads_aside = 0;
         else if (!strcmp(argv[i], "--watch-picture") && i + 1 < argc) hle_d3d9_watch_picture = atoi(argv[++i]);
@@ -1062,13 +1063,14 @@ int main(int argc, char** argv) {
 #ifdef __SWITCH__
     if (g_fps_limit > 0 && g_fps_limit <= 60 && 60 % g_fps_limit == 0) hle_d3d9_vsync = 60 / g_fps_limit, g_fps_limit = 0;
 #endif
-    fprintf(stderr, "[host] frames: %s; vertices %s; draws say %s; other threads %s; textures filled again %s, %s (--upload %d)\n",
+    fprintf(stderr, "[host] frames: %s; vertices %s; draws say %s; other threads %s; textures filled again %s, %s (--upload %d)%s\n",
             g_fps_limit < 0 ? "the game's own limiter" : g_fps_limit > 0 ? "the host's limiter" :
             hle_d3d9_vsync > 1 ? "every second or third of the display's (--fps)" : "no limit but the display's",
             hle_d3d9_stream ? "in one stream" : "in a buffer a draw (--no-stream)", hle_d3d9_plain ? "everything (--gl-plain)" : "what changed",
             hle_threads_aside ? "kept off the first one's core" : "left where they start (--no-aside)",
             hle_d3d9_upload & 1 ? "at four bits a channel where they are" : "at eight bits a channel",
-            hle_d3d9_upload & 2 ? "in place" : "made anew", hle_d3d9_upload);
+            hle_d3d9_upload & 2 ? "in place" : "made anew", hle_d3d9_upload,
+            hle_d3d9_pictures ? ", pictures GL has used again" : ", every picture sent (--no-pictures)");
     if (g_shots) mkdir(g_shots, 0755);
     /* The game's folder is the working directory (the game counts on it):
      * SoraVoice's files are looked for there, then the mod folders. */
@@ -1095,7 +1097,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: trails-portable [--imports] [--saves DIR] [--headless] [--frames N]\n"
                         "                       [--shots DIR] [--shot-every N] [--watch S] [--perf S] [--perf-detail]\n"
                         "                       [--stream | --no-stream] [--gl-plain] [--aside | --no-aside] [--watch-picture N]\n"
-                        "                       [--watch-game N] [--read-quarter] [--upload 0-3]\n"
+                        "                       [--watch-game N] [--read-quarter] [--upload 0-3] [--no-pictures]\n"
                         "                       [--fps N (0 = no limit)] [--original-limiter] <path to ed6_win_DX9.exe>\n");
         return 1;
     }
