@@ -1213,6 +1213,25 @@ A texture filled again in place now sends only the rectangle written since,
 too (`d3d9_surface_touched`); the game's pages are always written whole, so
 that is for other games and other textures.
 
+**On the console** with that build (modded copy, handheld, profiler on):
+the title stayed up after the logo was skipped, and walking about the fair
+ran at about 30 frames a second (it was 12 to 17), the thread at work 29 to
+31 ms a frame at 1,000 to 1,100 draws. The pictures answered 82-84% of the
+fills there, not 97%: walking about brings in more pictures than 256 hold,
+and too few places make an LRU cache thrash, so it keeps 512 now
+(`--pictures N`). The console's profile of the fair (10,000 samples): 41%
+lifted code (the particles of the confetti, ParticleUpdateA 0x004906C0 and
+ParticleUpdateC 0x00493180, and 0x004459B0, 0x00467740, 0x00450900,
+0x00442820, 0x00446D60 at the top), drawing about a quarter, about 5% the
+driver making and unmapping buffers (nvmap and address-space calls, for each
+texture sent and for each draw's own vertex buffer), about 5% the D3DX maths
+and 4% copying and comparing pictures. With section 24's fault found to be
+the game's own, the Switch has the vertex stream and the helper threads'
+places back as defaults (`--no-stream`, `--no-aside` to leave them out) and
+no longer watches the picture or the game unless asked: a read-back every
+30th frame made the processor wait for the graphics chip. Under Ryujinx the
+stream takes the fair's drawing from 7.2 to 4.8 ms a frame.
+
 The test: `run/saves_057` (a copy of the save, made from the card), a script
 that loads it and walks south-east into the fair, `SAVES_BASE` in
 `tools/run_portable.sh` for a run from other saves than `run/saves_base`.

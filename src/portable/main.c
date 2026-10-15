@@ -999,12 +999,14 @@ int main(int argc, char** argv) {
 #ifdef __SWITCH__
     static char text[2048];
     static char* words[64];
-    /* What only a console can show to be wrong is off there until it has been
-     * seen to be right on one; args.txt switches each on (--stream, --aside,
-     * --fps 0). Before the first thread of the host's own is started. */
-    hle_d3d9_stream = 0, hle_threads_aside = 0;
-    hle_d3d9_watch_picture = 30;      /* and the log is told how bright the picture is: nobody else can say */
-    g_game_watch = 15;                /* and what the game's fade and its windows are doing */
+    /* --stream and --aside were off here while a fault only a console showed
+     * was looked for; it was not theirs (docs/bringup.md, 24), and they are on
+     * again: args.txt's --no-stream and --no-aside switch them off. Before the
+     * first thread of the host's own is started. */
+    hle_d3d9_stream = 1, hle_threads_aside = 1;
+    /* The picture watch and the game watch (--watch-picture N, --watch-game N)
+     * are off again too: a read-back every Nth frame makes the processor wait
+     * for the graphics chip. */
     switch_start(argc, argv);
     /* The console gives a core's time by turns only to threads of priority
      * 59, which is where the C library starts every thread but this one. The
@@ -1040,6 +1042,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--read-quarter")) hle_d3d9_read_quarter = 1;
         else if (!strcmp(argv[i], "--upload") && i + 1 < argc) hle_d3d9_upload = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--no-pictures")) hle_d3d9_pictures = 0;
+        else if (!strcmp(argv[i], "--pictures") && i + 1 < argc) hle_d3d9_pictures = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--aside")) hle_threads_aside = 1;
         else if (!strcmp(argv[i], "--no-aside")) hle_threads_aside = 0;
         else if (!strcmp(argv[i], "--watch-picture") && i + 1 < argc) hle_d3d9_watch_picture = atoi(argv[++i]);
@@ -1071,6 +1074,7 @@ int main(int argc, char** argv) {
             hle_d3d9_upload & 1 ? "at four bits a channel where they are" : "at eight bits a channel",
             hle_d3d9_upload & 2 ? "in place" : "made anew", hle_d3d9_upload,
             hle_d3d9_pictures ? ", pictures GL has used again" : ", every picture sent (--no-pictures)");
+    if (hle_d3d9_pictures) fprintf(stderr, "[host] up to %d pictures kept by GL (--pictures N)\n", hle_d3d9_pictures);
     if (g_shots) mkdir(g_shots, 0755);
     /* The game's folder is the working directory (the game counts on it):
      * SoraVoice's files are looked for there, then the mod folders. */
@@ -1097,7 +1101,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: trails-portable [--imports] [--saves DIR] [--headless] [--frames N]\n"
                         "                       [--shots DIR] [--shot-every N] [--watch S] [--perf S] [--perf-detail]\n"
                         "                       [--stream | --no-stream] [--gl-plain] [--aside | --no-aside] [--watch-picture N]\n"
-                        "                       [--watch-game N] [--read-quarter] [--upload 0-3] [--no-pictures]\n"
+                        "                       [--watch-game N] [--read-quarter] [--upload 0-3] [--pictures N | --no-pictures]\n"
                         "                       [--fps N (0 = no limit)] [--original-limiter] <path to ed6_win_DX9.exe>\n");
         return 1;
     }
