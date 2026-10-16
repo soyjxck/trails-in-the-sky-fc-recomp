@@ -18,7 +18,7 @@ made on your machine from your own copy of the game.
 **In game.** All 7,220 functions of the exe lift (2.0 million lines of C, no
 lift errors) and the lifted game plays: the title screen, a new game's
 opening scenes, loading saves, walking about, the camp menu, shops and
-battles, at about 100 frames a second, with music and sound effects running.
+battles, with music and sound effects running.
 Each of those is a scripted, unattended test run that ends with the game
 closing normally (docs/bringup.md, 9).
 
@@ -35,12 +35,12 @@ The logo and opening movies play too. The game's pointer shows only while a
 pointer is used: a mouse, or the Switch's touch screen (touch a menu item to
 choose it). The keyboard is not there yet (docs/bringup.md, 13 to 21).
 
-On the Switch `trails.log` says every ten seconds where a frame's time went,
-and when the picture goes black. Three of the things that make the port
-faster there are off until a console has been seen to take them, and
-`args.txt` beside the program switches each on (docs/bringup.md, 24).
-`--profile FILE` samples the game's thread, there and on Linux, and
-`tools/profile_portable.py` names the result (docs/bringup.md, 23).
+On a console most of the game runs at 60 frames a second; the busiest towns
+(a festival crowd, say) still fall below it, and the Frame Rate row of the
+game's OPTION screen holds an even 30 for those who would rather have that.
+`trails.log` beside the program says every ten seconds where a frame's time
+went, and `--profile FILE` samples the game's thread, there and on Linux
+(`tools/profile_portable.py` names the result; docs/bringup.md, 23 to 27).
 
 See [docs/bringup.md](docs/bringup.md) for every wall on the way.
 
@@ -131,6 +131,46 @@ own OPTION screen. Its Frame Rate row is the same setting as the menu's frame
 rate: Uncapped, 120, 60 or 30 FPS Limit (on the Switch 60 or 30), in force
 at once.
 
+### Linux and the Switch
+
+The same lifted C builds for both, from a Linux shell (WSL will do), once
+the lift above has been made on Windows:
+
+```
+tools/build_portable.sh linux      # build-linux/trails-portable
+tools/build_portable.sh switch     # build-switch/trails.nro
+```
+
+Linux wants gcc, SDL2 and SDL2_ttf, OpenGL ES 3 (Mesa), libvorbisfile, and
+FFmpeg for the movies. The Switch wants devkitPro's devkitA64 and libnx with
+`switch-sdl2`, `switch-sdl2_ttf`, `switch-mesa`, `switch-libvorbis` and
+`switch-ffmpeg`. Without FFmpeg the movies are skipped; without the real
+libvorbis most of the music cannot be played (the top of
+`tools/build_portable.sh` has the details).
+
+On Linux, run `trails-portable` from the game's folder:
+`cd "Trails in the Sky FC" && ../build-linux/trails-portable ed6_win_DX9.exe`
+(run without the exe's name, it lists its options). The settings and saves
+go in a `save` folder there, or in the one `--saves DIR` names.
+
+On the Switch (a console with homebrew, or Ryujinx), make a folder on the SD
+card and put the game in it:
+
+```
+/switch/trails/trails.nro
+/switch/trails/game/          everything in the game's folder (ed6_win_DX9.exe and the rest)
+```
+
+The saves and settings go in `save/` beside it, the log in `trails.log`.
+Start it from the Homebrew Menu opened through a game (hold R while you
+start any game), not from the Album, which gives a program too little
+memory. Any folder works the same way, so a modded copy can sit in, say,
+`/switch/trails_modded/` with its own `trails.nro`. Options a command line
+would carry go in `args.txt` beside the program, on one line (`--fps 30`,
+`--voice-log`, `--profile sdmc:/switch/trails/profile.txt`).
+`trails-check.nro`, built beside it, says what the game needs of the
+console and the card, and whether it is there.
+
 ### A modded copy of the game
 
 `--game` takes any copy of the game's folder, and so do the Linux and Switch
@@ -155,6 +195,9 @@ run with all of the above set up; put a `config.ini` and saves for it in
 | `src/ui/settings_menu.cpp` | the settings menu (Dear ImGui, in `third_party/imgui`, on the game's own Direct3D device) |
 | `src/mods/voice.c` | SoraVoice's voices, for every host; `src/runtime/voice_out.c` and `src/portable/voice_out.c` read and play the files |
 | `src/common/crt.c` | pieces of the game's C runtime done by the host, on every host |
+| `src/common/hot.c` | the game's busiest functions (collision tests and walks, sorted triangles, shader constants) done natively, each checkable against the original (`--hot-check`, `--no-hot`) |
+| `src/common/frame_option.c` | the game's Frame Rate option, as the host's frame rate |
+| `tools/switch_check.c` | `trails-check.nro`: what the game needs of a Switch and its card |
 | `tools/profile_portable.py` | names for a profile of the portable host |
 | `config/function_starts.json` | the function starts the catalog is seeded with |
 | `tests/`, `tools/run_test.ps1` | play scripts and the unattended run that plays them |
@@ -163,8 +206,33 @@ run with all of the above set up; put a `config.ini` and saves for it in
 | `docs/bringup.md` | the walls, newest last |
 | `work/`, `src/recomp/gen/` | generated, never committed |
 
-## The game's files
+## Legal
 
-The game is Nihon Falcom's. Lifting it makes a derivative work that carries
-the game's own licence, which is why neither the game nor the lifted C is
-here: bring your own copy.
+This project is not affiliated with or endorsed by Nihon Falcom or XSEED
+Games. *The Legend of Heroes: Trails in the Sky* and all of its assets belong
+to their owners. None are included, and the port only runs from a copy of
+the game you own. Lifting the game makes a derivative work that carries the
+game's own licence, which is why neither the game nor the lifted C is here:
+both are made on your machine from your own copy.
+
+The code in this repository is under the [MIT License](LICENSE). It builds on
+pcrecomp (MIT) and includes Dear ImGui (MIT); see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which also lists what the
+Linux and Switch builds link.
+
+## Credits
+
+- [pcrecomp](https://github.com/sp00nznet/pcrecomp) by sp00nznet: the
+  `lift32` lifter, the `native32` host and the `win32hle` layer that the
+  Linux and Switch builds stand on. This port's changes to it are in the
+  [soyjxck/pcrecomp](https://github.com/soyjxck/pcrecomp) fork, the
+  `pcrecomp/` submodule, which also carries Steve Albrechtsen's guest
+  address space for 64-bit hosts.
+- [Dear ImGui](https://github.com/ocornut/imgui) by Omar Cornut: the settings
+  menu.
+- [SoraVoice](https://github.com/ZhenjianYang/SoraVoice) by ZhenjianYang:
+  the voice mod whose files the port reads and plays itself.
+- [DXVK](https://github.com/doitsujin/dxvk): the Vulkan renderer, if you put
+  its `d3d9.dll` beside the exe.
+- [devkitPro](https://devkitpro.org) and libnx: the Switch toolchain, and
+  Ryujinx, where the Switch build was brought up before it met a console.
