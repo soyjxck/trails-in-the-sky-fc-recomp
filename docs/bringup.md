@@ -1374,7 +1374,18 @@ After, the same scenes:
 | Uncapped | ~530 | ~8,600 | |
 
 The main thread's own work in the fair on Linux went from 5.7 to 4.3 ms a
-frame at 60: the game's spin is gone. Each press of the row is followed by
-one long frame (Linux 2.5-4.3 s, Ryujinx about 0.5 s, Windows 0.1 s), and
-was before: the game writes its whole settings file at a change, key by
-key.
+frame at 60: the game's spin is gone.
+
+A press of any row on the OPTION screen was followed by one long frame
+(Linux 2.5-4.3 s, Ryujinx about 0.5 s, Windows 0.1 s), with the game's own
+row as with the host's. The game saves all 63 of its settings at a change,
+twice: 126 WritePrivateProfileStringW calls (0x004B06A0), one value
+different. win32hle read the file, parsed it and wrote it back for each,
+and finding the file from its name read its folders too. It now keeps the
+last file read or written in memory, by the name it was asked for, and
+writes it only when a value changes (forgotten when a file is opened to
+write, deleted, moved or copied; the selftest has both). The Windows host
+leaves out a write of the value the file holds. The file comes out the
+same, byte for byte, and a press costs one frame of 100 ms on Linux (the
+disk is reached through WSL), 19-51 ms on Windows, 35-44 ms in Ryujinx,
+modded copy included.

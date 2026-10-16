@@ -246,6 +246,24 @@ static void shim_CreateMutexW(void) {
     RET(3);
 }
 
+/* ---- the settings file -------------------------------------------------------
+ * At each change on its OPTION screen the game saves all 63 of its settings,
+ * twice, each with a WritePrivateProfileStringW, and Windows reads and
+ * rewrites the file for every one: 126 times for a value changed, a tenth of
+ * a second's hitch. A write of the value the file holds already is not made,
+ * so the file ends up as it would have. */
+static void shim_WritePrivateProfileStringW(void) {
+    LPCWSTR sec = (LPCWSTR)(uintptr_t)ARG(0), key = (LPCWSTR)(uintptr_t)ARG(1);
+    LPCWSTR val = (LPCWSTR)(uintptr_t)ARG(2), file = (LPCWSTR)(uintptr_t)ARG(3);
+    wchar_t now[1024];
+    if (sec && key && val && file && wcslen(val) < 1000 &&
+        GetPrivateProfileStringW(sec, key, L"\x1F(none)", now, 1024, file) < 1000 && !wcscmp(now, val))
+        g_eax = 1;
+    else
+        g_eax = (uint32_t)WritePrivateProfileStringW(sec, key, val, file);
+    RET(4);
+}
+
 /* ---- unattended ------------------------------------------------------------
  * A test run must not disturb whoever is using the machine. Left alone the
  * game puts a window on the desktop, takes the focus and moves the real mouse
@@ -1453,6 +1471,7 @@ static native32_shim_t g_shims[] = {
     { "SetUnhandledExceptionFilter", shim_SetUnhandledExceptionFilter },
     { "OpenMutexW", shim_OpenMutexW },
     { "CreateMutexW", shim_CreateMutexW },
+    { "WritePrivateProfileStringW", shim_WritePrivateProfileStringW },
     { "CreateWindowExW", shim_CreateWindowExW },
     { "SetWindowPos", shim_SetWindowPos },
     { "SetCursorPos", shim_SetCursorPos },
