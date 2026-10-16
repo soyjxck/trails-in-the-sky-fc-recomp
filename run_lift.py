@@ -81,10 +81,15 @@ HOOKS = {0x004FD597, 0x00504ABF, 0x00504A01, 0x00522510, 0x004FE110}
 #   0x004886D0  MoviePlay (the file's name in ecx): DirectShow on Windows;
 #               a host without it plays the file itself (src/portable/movie.c)
 #               and leaves the game's movie state at "over".
-#   0x004459B0  a collision test, whether a segment meets a plane: answered
-#               by the host when it does not, which is nearly always; the
-#               original works out where when it does (src/common/hot.c).
-WRAPS = {0x004802C0, 0x004C11A0, 0x00477580, 0x00477180, 0x004886D0, 0x004459B0}
+#   0x004459B0  collision tests, called by the thousand a frame and nearly
+#   0x00442820  always answering no, which the host answers itself; the
+#   0x00446D60  originals run for the rest (src/common/hot.c): a segment and
+#               a plane, a segment and a shape of twelve faces, a raycast
+#               down onto a triangle.
+#   0x00467740  a triangle the game sorts by depth and draws itself: done by
+#               the host whole where D3DX is the host's own.
+WRAPS = {0x004802C0, 0x004C11A0, 0x00477580, 0x00477180, 0x004886D0, 0x004459B0, 0x00442820, 0x00446D60,
+         0x00467740}
 
 # Additions to the game itself: C run after the instruction at the address.
 # The lift stays faithful; a patch is for what the original cannot have.

@@ -1277,3 +1277,24 @@ Kept:
   about the fair on Linux, the game's part of a frame is 2.6-2.8 ms with it
   and 2.9-3.1 ms without (`FC_HOT_OFF=1`, `--no-hot`, the same build). Under
   Ryujinx the walk varies too much from run to run to say.
+- 0x00442820, the twelve-faced shape the plane test is called for (whole),
+  and 0x00446D60, the raycast down onto a triangle (its "the segment does not
+  reach the plane" answer), likewise. In the console's profile nearly all of
+  the plane test's time was under the shape test, from the octree walk
+  MeshProbe 0x00443A20.
+- 0x00467740, a triangle the game sorts by depth and draws itself (5.2% of
+  the console's time in the fair, and with its two D3DX calls a vertex,
+  D3DXMatrixTranslation and D3DXMatrixMultiply, nearer 7%): the draw-list
+  record, the wind's sway for the materials of kind 6 (by the game's own
+  sinf, 0x00524D15, called as lifted code), the projection and the screen
+  test, fog, colour scales, the light near the player, brightness, the depth
+  key. Whole, where D3DX is the host's (the fork's `hle_d3dx_matrix_multiply`
+  is the call's arithmetic, so its results are the call's); the Windows host
+  keeps the original, its D3DX being the real one.
+
+All four checked on every call walking about the fair, eax and, for the
+triangle, every byte it writes (record, three vertices, key, counters): on
+Linux 17.1 M plane tests, 1.9 M shapes, 6.3 M raycasts, 3.4 M triangles; on the
+Switch build under Ryujinx 25.3 M, 2.9 M, 9.3 M and 4.9 M. None different.
+Walking about the fair on Linux with the PC busy (77% load from other work):
+the game's part of a frame 3.0-3.5 ms with them, 3.6-4.2 ms without.
