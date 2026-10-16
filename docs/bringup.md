@@ -1314,8 +1314,67 @@ differing by 0x100 from a plane test whose answer leaves an address of the
 stack there. Every caller reads only the low byte, but the check is of the
 whole register, and passes now: Linux in the fair and the Windows host on
 the short route (MSVC's 32-bit build: 19.7 M constant sets, 18.4 M plane
-tests, 17.1 M raycasts, 5.2 M walks), none different. Under Ryujinx these
-five were not checked: its installation was changed under it (its system
-folder made a link to a folder without the keys and firmware), and it
-starts no program now. Walking about the fair on Linux, all nine: the
-game's part of a frame 2.6-2.9 ms with them, 3.4-4.0 without.
+tests, 17.1 M raycasts, 5.2 M walks), none different; and the Switch build
+under Ryujinx, all nine walking about the fair (21.6 M plane tests, 2.5 M
+shapes and 0.2 M about a sphere, 9.1 M raycasts, 1.9 M probes, 2.4 M
+first-node walks, 0.3 M mesh tests, 3.7 M triangles, 8.0 M constant sets),
+none different. Walking about the fair on Linux, all nine: the game's part
+of a frame 2.6-2.9 ms with them, 3.4-4.0 without.
+
+## 27. The game's own frame-rate option
+
+The OPTION screen in the camp menu has a Frame Rate row: Automatic, 30 FPS
+Limit, 60 FPS Limit (FpsMode in config.ini, the byte at 0x007A8591: 0, 1,
+2). The game keeps a limit in its frame loop (0x00472E40), just before
+Present: it reads the counter and spins on `PumpMessages(); Sleep(0)` until
+more than 32 or 16 whole milliseconds have passed since the last Present
+returned. A frame can then go at 33 or 17 ms at the soonest, never at 16.7:
+
+| | Linux, the fair | the Switch build under Ryujinx |
+|---|---|---|
+| 60 FPS Limit, as the game does it | 57.5 a second (17.4 ms frames) | 57.8 |
+| 30 FPS Limit, as the game does it | 29.8-30.0, frames of 33 to 36 ms | |
+| Automatic | 125 (the game's other wait) | 60 (the display) |
+
+At 57.8 against a display's 60 a refresh is shown twice about twice a
+second: a judder. Automatic is only the 125 a second the game's Clock_Update
+holds to (section 10), which the host keeps already.
+
+The row is now the host's frame rate (src/common/frame_option.c; four
+patches, run_lift.py PATCHES). Where the frame loop has read the byte the
+host answers 0, nothing to wait for, and paces the frame itself: with its
+timer, or on the Switch by presenting every refresh or every second one.
+Where a press has stored the game's next value the host stores its own, and
+where the row's label has been picked it hands the game its own text, in
+English or Japanese as the game is (無制限 for Uncapped, `%dFPS固定` like
+the game's own; the Japanese ones not yet seen on screen). The rates, in
+the order a press steps
+through them, from the top down as the game's own went:
+
+- a PC (Windows, Linux): Uncapped, 120, 60, 30 FPS Limit;
+- the Switch: 60 and 30, its display's sixty and every second refresh.
+
+The byte says which is in force (0 Uncapped, 1 30, 2 60, 3 120, 4 a rate the
+row has no place for, shown by its number) and the game saves it with the
+rest of its settings. On Windows the row and the settings menu's Frame rate
+(F2) are one setting, kept as `[Recomp] Fps`; with none kept, the byte the
+game read at start decides (30, 60 or 120; its 0 there is the old
+Automatic) and otherwise the rate is 120 (it was 125, which the row has no
+place for). Elsewhere the byte is the setting: a first run writes
+FpsMode=2, 60. `--fps` wins for a run on every host; `--original-limiter`
+leaves the game's waits and its row as they were.
+
+After, the same scenes:
+
+| | Linux | Windows (camp menu) | Switch build, Ryujinx |
+|---|---|---|---|
+| 120 FPS Limit | 119.8 | 120 frames each second | |
+| 60 FPS Limit | 60.0 (16.7 ms frames) | 60 | 60.0 |
+| 30 FPS Limit | 30.0 (33.3 ms) | 30 | 30.0, every second refresh |
+| Uncapped | ~530 | ~8,600 | |
+
+The main thread's own work in the fair on Linux went from 5.7 to 4.3 ms a
+frame at 60: the game's spin is gone. Each press of the row is followed by
+one long frame (Linux 2.5-4.3 s, Ryujinx about 0.5 s, Windows 0.1 s), and
+was before: the game writes its whole settings file at a change, key by
+key.

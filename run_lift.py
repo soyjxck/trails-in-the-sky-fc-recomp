@@ -106,10 +106,27 @@ WRAPS = {0x004802C0, 0x004C11A0, 0x00477580, 0x00477180, 0x004886D0, 0x004459B0,
 #               command, at esi: a voice tag is '#', digits, 'v'.
 #   0x004E2EC4  the typing beep is about to be played: not over a voice.
 #   0x004E2DDD  the click as the player turns the page: the voice stops.
+#
+# The game's own frame-rate option (OPTION screen, Frame Rate; FpsMode in
+# config.ini, the byte at 0x007A8591) is the host's frame rate, with the
+# host's choices (src/common/frame_option.c):
+#   0x004738B0  the frame is about to be presented and the option has been
+#               read into al. The game's wait for it counts whole
+#               milliseconds from the last Present (more than 16 for 60, 32
+#               for 30: 57.5 and an uneven 30 a second) on Sleep(0); the host
+#               paces the frame itself and tells the game there is nothing
+#               to wait for.
+#   0x004E3FCD  the row was pressed and the game has stored its next value
+#   0x004E3FE9  (two places): the host's next instead.
+#   0x004E4E54  the row's label has been picked: the host's.
 PATCHES = {
     0x004E191C: '{ void fc_voice_tag(uint32_t); fc_voice_tag(esi); }',
     0x004E2EC4: '{ int fc_voice_playing(void); if (fc_voice_playing()) goto L_004E2EE2; }',
     0x004E2DDD: '{ void fc_voice_page(void); fc_voice_page(); }',
+    0x004738B0: '{ int fc_fps_mode(int); SET_LO8(eax, (uint32_t)fc_fps_mode((int)LO8(eax))); }',
+    0x004E3FCD: '{ void fc_fps_next(void); fc_fps_next(); }',
+    0x004E3FE9: '{ void fc_fps_next(void); fc_fps_next(); }',
+    0x004E4E54: '{ uint32_t fc_fps_label(uint32_t, int); eax = fc_fps_label(eax, MEM32(0x559040) == 1); }',
 }
 
 

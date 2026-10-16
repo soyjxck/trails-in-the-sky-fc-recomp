@@ -584,17 +584,23 @@ void fc_wrap_004802C0(void) {
  * The host does the waiting instead, asleep: a high-resolution timer for all
  * but the last millisecond and a half, then a short spin, and the game's loop
  * is told not to wait (its `wait` argument cleared). --fps N sets the rate
- * (30, 60, 120, 144...; 0 = no limit; default 125, the game's own ceiling;
- * above that the game runs on shorter time steps than it was made for).
+ * (30, 60, 120, 144...; 0 = no limit; default 120; above 125, the game's own
+ * ceiling, the game runs on shorter time steps than it was made for).
  * The message pump the loop ran still runs while waiting.
- * --original-limiter leaves the game's loop as it was. */
+ * --original-limiter leaves the game's loop as it was.
+ *
+ * The rate is also the Frame Rate row of the game's own OPTION screen, whose
+ * own wait the host takes over (src/common/frame_option.c): a choice there
+ * is in force at once and kept as [Recomp] Fps, like one in the settings
+ * menu. With nothing kept, the rate is the one the game's row was left at
+ * (30, 60 or 120), or 120. */
 #define FC_CLOCK_LAST      0x007C8BB8u   /* i64: counter value at the last update */
 #define FC_CLOCK_LEFTOVER  0x007C8BC0u   /* i64: ticks left over after whole milliseconds */
 #define FC_CLOCK_PER_MS    0x007C8BD0u   /* i64: counter ticks per millisecond */
 #define FC_CLOCK_COUNTER   0x007C8B4Du   /* byte: a performance counter is in use */
-#define FC_ORIGINAL_FPS 125
+#define FC_DEFAULT_FPS 120
 
-static int g_fps_limit = FC_ORIGINAL_FPS;
+static int g_fps_limit = FC_DEFAULT_FPS;
 static HANDLE g_frame_timer;
 static LARGE_INTEGER g_qpc_freq;
 
@@ -1300,13 +1306,30 @@ int fc_host_has_dxvk(void) {
  *
  *     [Recomp]
  *     Renderer=d3d9        d3d9, vulkan or d3d12
- *     Fps=125              frames a second; 0 = no limit
+ *     Fps=120              frames a second; 0 = no limit (also the game's OPTION screen's Frame Rate)
  *     Borderless=0         1: with WindowMode=1, a window without a frame that covers the screen
  *     Mouse=1              0: no pointer, and the mouse does nothing in the game
  *
  * The game writes its own keys one by one and leaves the section alone. The
  * settings menu writes it; --renderer and --fps win over it for one run. */
-static int g_renderer_given, g_fps_given;
+static int g_renderer_given, g_fps_given, g_fps_kept;
+
+/* The frame rate as the game's OPTION screen sees it (src/common/frame_option.c). */
+#define FC_SETTINGS_FILE 0x007A8600u  /* wchar_t[]: config.ini's full path, as the game worked it out */
+int fc_rate(void) { return g_fps_limit; }
+void fc_rate_choose(int fps) {
+    const wchar_t* path = (const wchar_t*)(uintptr_t)FC_SETTINGS_FILE;
+    wchar_t text[16];
+    g_fps_limit = fps;
+    swprintf(text, 16, L"%d", fps);
+    if (!path[0] || !WritePrivateProfileStringW(L"Recomp", L"Fps", text, path))
+        fprintf(stderr, "[host] the frame rate could not be kept in the settings file\n");
+    fprintf(stderr, "[host] frame rate, from the game's OPTION screen: %d\n", fps);
+}
+void fc_rate_start(int fps) {
+    /* 0 is the old Automatic there, never chosen as Uncapped: that is kept as Fps=0 */
+    if (g_fps_limit >= 0 && !g_fps_given && !g_fps_kept && fps > 0) g_fps_limit = fps;
+}
 
 static void recomp_settings(void) {
     wchar_t path[MAX_PATH + 40] = L"", text[32] = L"";
@@ -1324,7 +1347,7 @@ static void recomp_settings(void) {
                    : !_wcsicmp(text, L"d3d12") || !_wcsicmp(text, L"dx12") ? RENDERER_D3D12 : RENDERER_D3D9;
     if (!g_fps_given) {
         int fps = (int)GetPrivateProfileIntW(L"Recomp", L"Fps", (INT)-2, path);
-        if (fps >= 0) g_fps_limit = fps;
+        if (fps >= 0) g_fps_limit = fps, g_fps_kept = 1;
     }
     g_borderless = GetPrivateProfileIntW(L"Recomp", L"Borderless", 0, path) != 0;
     g_mouse_off = GetPrivateProfileIntW(L"Recomp", L"Mouse", 1, path) == 0;
@@ -1651,7 +1674,7 @@ int main(int argc, char** argv) {
         else {
             printf("usage: trails [--run] [--game DIR] [--savedir DIR] [--unattended] [--active] [--silent]\n"
                    "              [--renderer d3d9|vulkan|d3d12] [--mods DIR] [--voice-log]\n"
-                   "              [--fps N (0 = no limit; default 125, the game's own)] [--original-limiter]\n"
+                   "              [--fps N (0 = no limit; default 120)] [--original-limiter]\n"
                    "              [--shots DIR] [--shot-every N] [--script FILE] [--watchdog S]\n"
                    "              [--profile FILE] [--frame-times FILE] [--gameargs \"...\"]\n"
                    "              [--probe VA] [--native-trace] [--callbacks] [--count-natives [N]] [--d3dx-dump DIR]\n"

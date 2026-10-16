@@ -114,8 +114,9 @@ static void stop_with(const char* fmt, ...) {
     exit(1);
 }
 
-/* The settings a first run starts with: a 1280 by 720 picture, sound and the
- * movies on. Written only when there is no settings file. */
+/* The settings a first run starts with: a 1280 by 720 picture at 60 frames
+ * a second, sound and the movies on. Written only when there is no settings
+ * file. */
 static const char k_first_settings[] =
     "[Video]\r\n"
     "AdapterDX9=0\r\n"
@@ -134,7 +135,7 @@ static const char k_first_settings[] =
     "WaitVSync=0\r\n"
     "LowTexture=0\r\n"
     "TextureFilter=3\r\n"
-    "FpsMode=0\r\n"
+    "FpsMode=2\r\n"
     "FullAntiAlias=0\r\n"
     "LowEffect=0\r\n"
     "ShadowQuality=2\r\n"
@@ -507,7 +508,14 @@ void fc_wrap_004802C0(void) {
  * refresh, or every second or third, which no sleeping here could do as
  * evenly. The rate is the one asked for and stays it: a rate that moved
  * between sixty and thirty by itself was tried and taken out again
- * (docs/bringup.md, 23). */
+ * (docs/bringup.md, 23).
+ *
+ * The rate is also the Frame Rate row of the game's own OPTION screen, whose
+ * own wait the host takes over (src/common/frame_option.c): 60 or 30 on the
+ * Switch, Uncapped, 120, 60 or 30 elsewhere. A choice there is in force at
+ * once and the game keeps it in its settings; at start it is the rate
+ * unless --fps gives one. --original-limiter leaves the game's waits, and
+ * its row, as they were. */
 #define FC_CLOCK_COUNTER 0x007C8B4Du  /* byte: a performance counter is in use */
 #ifdef __SWITCH__
 /* On a console the game's own loop is the default until the rest has been
@@ -517,6 +525,8 @@ static int g_fps_limit = -1;
 #else
 static int g_fps_limit = 125;         /* the game's own ceiling */
 #endif
+static int g_game_limiter;            /* --original-limiter */
+static int g_fps_given;               /* --fps */
 /* The processor time the calling thread has had, in nanoseconds. Between two
  * Presents it is what the frame cost, whatever it waited for and wherever
  * (the driver waits for the display in the frame's first clear, not in
@@ -561,6 +571,38 @@ static void frame_wait(uint64_t due) {
         hle_block_end();
     }
 }
+/* The frame rate as the game's OPTION screen sees it (src/common/frame_option.c).
+ * On the Switch it is the display's sixty, or every second refresh's thirty
+ * (or a lower rate --fps asked for). */
+int fc_rate(void) {
+    if (g_game_limiter) return -1;
+#ifdef __SWITCH__
+    int fps = 60 / (hle_d3d9_vsync > 0 ? hle_d3d9_vsync : 1);
+    return g_fps_limit > 0 && g_fps_limit < fps ? g_fps_limit : fps;
+#else
+    return g_fps_limit;
+#endif
+}
+static void rate_set(int fps) {
+#ifdef __SWITCH__
+    hle_d3d9_vsync = fps > 0 && fps < 60 ? 60 / fps : 1;
+    if (g_fps_limit > 0) g_fps_limit = 0;           /* the display paces it now */
+#else
+    g_fps_limit = fps;
+#endif
+}
+void fc_rate_choose(int fps) {
+    rate_set(fps);
+    fprintf(stderr, "[host] frame rate, from the game's OPTION screen: %d\n", fps);
+}
+void fc_rate_start(int fps) {
+    if (g_game_limiter || g_fps_given || fps < 0) return;
+#ifdef __SWITCH__
+    if (fps != 30) fps = 60;                        /* Uncapped and 120 are a PC's */
+#endif
+    rate_set(fps);
+}
+
 void fc_wrap_004C11A0(void) {
     static uint64_t due;
     if (MEM8(g_esp + 4) && MEM8(FC_CLOCK_COUNTER) && g_fps_limit >= 0) {
@@ -1048,8 +1090,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--watch-picture") && i + 1 < argc) hle_d3d9_watch_picture = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--watch-game") && i + 1 < argc) g_game_watch = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--script-in-movies")) g_script_in_movies = 1;
-        else if (!strcmp(argv[i], "--fps") && i + 1 < argc) g_fps_limit = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1;
+        else if (!strcmp(argv[i], "--fps") && i + 1 < argc) g_fps_limit = atoi(argv[++i]), g_fps_given = 1;
+        else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1, g_game_limiter = 1;
         else if (!strcmp(argv[i], "--profile") && i + 1 < argc) profile = argv[++i];
         else if (!strcmp(argv[i], "--d3d-log")) hle_d3d9_log = 1;
         else if (!strcmp(argv[i], "--audio-out") && i + 1 < argc) wav_open(argv[++i]);

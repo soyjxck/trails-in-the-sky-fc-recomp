@@ -427,7 +427,7 @@ int fc_menu_frame(void* device) {
                     else snprintf(other, sizeof other, "%d", fps);
                     fnames[fcount] = other, fat = fcount++;
                 }
-                if (choose("Frame rate", fnames, fcount, &fat, "Frames a second. Taken at once.") && fat < (int)(sizeof k_fps / sizeof k_fps[0])) {
+                if (choose("Frame rate", fnames, fcount, &fat, "Frames a second. Taken at once. The same setting as Frame Rate in the game's own OPTION screen.") && fat < (int)(sizeof k_fps / sizeof k_fps[0])) {
                     fc_host_set_fps(k_fps[fat].value);
                     write_int(L"Recomp", L"Fps", k_fps[fat].value);
                     fprintf(stderr, "[menu] frame rate = %d\n", k_fps[fat].value);

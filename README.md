@@ -84,7 +84,7 @@ game runs wrong (docs/bringup.md, 8).
 | `--shots DIR`, `--shot-every N` | save the back buffer as a PNG every N frames |
 | `--script FILE` | play a script of button presses (`tests/*.txt`; `src/runtime/host.c` has the format) |
 | `--renderer d3d9`, `vulkan`, `d3d12` | what draws: Windows' Direct3D 9, Vulkan (DXVK's 32-bit `d3d9.dll` in a `dxvk` folder beside the exe), or Direct3D 12 |
-| `--fps N` | frames a second: 30, 60, 144... (default 125, the game's own ceiling; 0 = no limit) |
+| `--fps N` | frames a second: 30, 60, 120, 144... (default 120; 0 = no limit; above 125, the game's own ceiling, it runs on shorter time steps than it was made for) |
 | `--watchdog S` | report where the game is and stop after S seconds |
 | `--profile FILE` | sample the main thread and write where its time went |
 | `--frame-times FILE` | write every frame's length, and how much of it the main thread ran |
@@ -121,13 +121,15 @@ the game writes its own keys back as it leaves. The game's launcher
 | `[Video] ShadowQuality` | 0 none, 1 simple, 2 full |
 | `[Video] LogoPlayOff`, `OpeningPlayOff` | 1 skips that movie |
 | `[Recomp] Renderer` | `d3d9`, `vulkan` or `d3d12`: the port's own key |
-| `[Recomp] Fps` | frames a second, 0 = no limit (default 125): the port's own key |
+| `[Recomp] Fps` | frames a second, 0 = no limit (default 120): the port's own key, also set by Frame Rate in the game's OPTION screen |
 | `[Recomp] Borderless` | 1, with `WindowMode=1`: a window without a frame that covers the screen, the picture stretched to it |
 | `[Recomp] Mouse` | 0: no pointer, and the mouse does nothing in the game (for a pad or the keyboard alone) |
 
 `--renderer` and `--fps` on the command line win over the file for that run.
 Music, sound effects, voices, the camera and the mini map are in the game's
-own OPTION screen.
+own OPTION screen. Its Frame Rate row is the same setting as the menu's frame
+rate: Uncapped, 120, 60 or 30 FPS Limit (on the Switch 60 or 30), in force
+at once.
 
 ### A modded copy of the game
 
