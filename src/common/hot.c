@@ -38,6 +38,12 @@
  *               do for it); where they do not meet, no, with eax what the
  *               original leaves there (b, its low byte cleared). Where they
  *               do, the original.
+ *   0x00443A20  MeshProbe and 0x00443AF0: the octree walks that call those two,
+ *               done here whole with them (below, at the functions); MeshTest
+ *               0x00443940 and its shape test 0x00442730, the same for a sphere
+ *               about the segment, with the game's own sphere-and-triangle test.
+ *   0x00465400  ShaderConstants_Set: the constants asked for are those set
+ *               already (below).
  *   0x00467740  thiscall bool (object *this, const float m[16], const vertex
  *               in[3] (0x28 each), const material *mat, int order, short
  *               flags), ret 0x14: one of the triangles the game sorts by depth
@@ -70,12 +76,19 @@
 void fc_orig_004459B0(void);
 void fc_orig_00442820(void);
 void fc_orig_00446D60(void);
+void fc_orig_00443A20(void);
+void fc_orig_00443AF0(void);
+void fc_orig_00442730(void);
+void fc_orig_00443940(void);
+void sub_00446A60(void);
 
 static float guest_float(uint32_t at) {
     float f;
     memcpy(&f, (const void*)ADDR(at), 4);
     return f;
 }
+static uint32_t get32(uint32_t at) { uint32_t v; memcpy(&v, (const void*)ADDR(at), 4); return v; }
+static void put32(uint32_t at, uint32_t v) { memcpy((void*)ADDR(at), &v, 4); }
 static int finite_float(float f) {
     uint32_t u;
     memcpy(&u, &f, 4);
@@ -123,20 +136,31 @@ static float plane_distance(uint32_t pl, uint32_t p) {
 }
 static int straddles(float da, float db) { return (da >= 0.0f && db <= 0.0f) || (da <= 0.0f && db >= 0.0f); }
 
+/* An original called from here as the game would call it: with its stack
+ * where it would be (at, the place of the return address, which is what the
+ * game's caller's frame makes it: an original's answer can carry an address
+ * of that stack in eax's upper bits), its arguments above, ecx; the stack the
+ * host's own caller has given back afterwards. */
+static uint32_t call_original(void (*fn)(void), uint32_t ecx, uint32_t at, int n, const uint32_t* args) {
+    uint32_t esp = g_esp, cur = g_cur_func;
+    MEM32(at) = RECOMP_RETADDR;
+    for (int i = 0; i < n; i++) MEM32(at + 4 + 4 * (uint32_t)i) = args[i];
+    g_esp = at;
+    g_ecx = ecx;
+    fn();
+    g_cur_func = cur;
+    g_esp = esp;
+    return g_eax;
+}
+
 /* 0x004459B0 for a caller here: whether the segment meets the plane, and the
- * eax the original would leave. Where it does, the original is called as the
- * game calls it, below the stack the caller has. */
-static int segment_meets_plane(uint32_t plane, uint32_t a, uint32_t b, uint32_t* eax) {
+ * eax the original would leave. Where it does, the original, its stack at at. */
+static int segment_meets_plane(uint32_t plane, uint32_t a, uint32_t b, uint32_t* eax, uint32_t at) {
     float da = plane_distance(plane, a), db = plane_distance(plane, b);
     if (!(finite_float(da) && finite_float(db) && straddles(da, db))) { *eax = 0; return 0; }
-    uint32_t cur = g_cur_func;
-    g_esp -= 12;
-    MEM32(g_esp) = RECOMP_RETADDR, MEM32(g_esp + 4) = a, MEM32(g_esp + 8) = b;
-    g_ecx = plane;
-    fc_orig_004459B0();                            /* takes the 12 off again */
-    g_cur_func = cur;
-    *eax = g_eax;
-    return (g_eax & 0xFFu) != 0;
+    uint32_t args[2] = { a, b };
+    *eax = call_original(fc_orig_004459B0, plane, at, 2, args);
+    return (*eax & 0xFFu) != 0;
 }
 
 void fc_wrap_004459B0(void) {
@@ -153,27 +177,49 @@ void fc_wrap_004459B0(void) {
     g_esp += 12;                                    /* the return address and the two arguments */
 }
 
+/* 0x00442820, and with r the radius 0x00442730 (which has its faces'
+ * distances against r, handed over in xmm3, where 0x00442820 has 0): the eax
+ * it leaves, its low byte the answer. */
+static uint32_t shape_test_within(uint32_t shape, uint32_t a, uint32_t b, float r, uint32_t esp) {
+    uint32_t eax;
+    int i;
+    for (i = 0; i < 12; i += 2) if (plane_distance(shape + 0x18 + 0x68u * (uint32_t)i, a) > r) break;
+    if (i == 12) return ((shape + 0x44 + 6 * 0xD0) & 0xFFFFFF00u) | 1u;  /* the walk's pointer, al 1 */
+    for (i = 0; i < 12; i += 2) if (plane_distance(shape + 0x18 + 0x68u * (uint32_t)i, b) > r) break;
+    if (i == 12) return 1u;                                               /* the walk's count 12, al 1 */
+    eax = 0;
+    for (i = 0; i < 12; i++)
+        if (segment_meets_plane(shape + 0x18 + 0x68u * (uint32_t)i, a, b, &eax, esp - 32)) return (eax & 0xFFFFFF00u) | 1u;
+    return eax;
+}
+/* esp: where its return address is, as with every function done here; it
+ * saves five registers, then pushes the plane test's two arguments. */
+static uint32_t shape_test(uint32_t shape, uint32_t a, uint32_t b, uint32_t esp) { return shape_test_within(shape, a, b, 0.0f, esp); }
+void fc_wrap_00442730(void) {
+    static hot_check c = { "0x00442730", 0, 0 };
+    if (off()) { fc_orig_00442730(); return; }
+    xmm_t radius = g_xmm[3];                        /* the plane test may be the original's, which uses xmm3 too */
+    uint32_t shape = g_ecx, eax = shape_test_within(shape, MEM32(g_esp + 4), MEM32(g_esp + 8), radius.f32[0], g_esp);
+    if (checking()) { g_xmm[3] = radius; check_with(&c, fc_orig_00442730, shape, eax, 12); }
+    g_eax = eax;
+    g_esp += 12;
+}
 void fc_wrap_00442820(void) {
     static hot_check c = { "0x00442820", 0, 0 };
     if (off()) { fc_orig_00442820(); return; }
-    uint32_t shape = g_ecx, a = MEM32(g_esp + 4), b = MEM32(g_esp + 8), eax;
-    int i;
-    for (i = 0; i < 12; i += 2) if (plane_distance(shape + 0x18 + 0x68u * (uint32_t)i, a) > 0.0f) break;
-    if (i == 12) eax = ((shape + 0x44 + 6 * 0xD0) & 0xFFFFFF00u) | 1u;    /* the walk's pointer, al 1 */
-    else {
-        for (i = 0; i < 12; i += 2) if (plane_distance(shape + 0x18 + 0x68u * (uint32_t)i, b) > 0.0f) break;
-        if (i == 12) eax = 1u;                                            /* the walk's count 12, al 1 */
-        else {
-            eax = 0;
-            for (i = 0; i < 12; i++)
-                if (segment_meets_plane(shape + 0x18 + 0x68u * (uint32_t)i, a, b, &eax)) { eax = (eax & 0xFFFFFF00u) | 1u; break; }
-        }
-    }
+    uint32_t shape = g_ecx, eax = shape_test(shape, MEM32(g_esp + 4), MEM32(g_esp + 8), g_esp);
     if (checking()) check_with(&c, fc_orig_00442820, shape, eax, 12);
     g_eax = eax;
     g_esp += 12;
 }
 
+/* 0x00446D60: the eax it leaves. Where the segment reaches the triangle's
+ * plane, the original, its stack at at. */
+static uint32_t raycast(uint32_t tri, uint32_t a, uint32_t b, uint32_t hit, uint32_t at) {
+    if (!straddles(plane_distance(tri, a), plane_distance(tri, b))) return b & 0xFFFFFF00u;
+    uint32_t args[3] = { a, b, hit };
+    return call_original(fc_orig_00446D60, tri, at, 3, args);
+}
 void fc_wrap_00446D60(void) {
     static hot_check c = { "0x00446D60", 0, 0 };
     if (off()) { fc_orig_00446D60(); return; }
@@ -188,14 +234,161 @@ void fc_wrap_00446D60(void) {
     g_esp += 16;                                    /* the return address and the three arguments */
 }
 
+/* With FC_HOT_CHECK, for the walks: the hit kept before, the answer and the
+ * hit found here kept, the hit put back for the original, and both compared
+ * after it has run (the nodes each visits are marked the same by both). */
+static void check_walk(hot_check* c, void (*orig)(void), uint32_t node, uint32_t eax, uint32_t pops, uint32_t hit, const uint8_t was[12]) {
+    uint8_t mine[12];
+    memcpy(mine, (const void*)ADDR(hit), 12);
+    memcpy((void*)ADDR(hit), was, 12);
+    check_with(c, orig, node, eax, pops);
+    if (memcmp(mine, (const void*)ADDR(hit), 12) && c->differed++ < 8)
+        fprintf(stderr, "[hot] %s differs in the hit it found\n", c->name);
+}
+
+/* MeshProbe 0x00443A20, thiscall bool (node *this, a, b, float hit[3]), ret 0xC:
+ * the octree under a node walked for the highest hit of the segment a-b on
+ * its triangles: a node's box (+0x18) by 0x00442820, then its eight children
+ * (+8, 0x510 each) or its triangles (+0x10, +0x14 of them, 0x68 each) by
+ * 0x00446D60; +4 is the last triangle hit. eax as the original leaves it. */
+static uint32_t mesh_probe(uint32_t node, uint32_t a, uint32_t b, uint32_t hit, uint32_t eax_in, uint32_t esp) {
+    uint32_t bl = 0, eax, frame = (esp - 4) & ~7u;  /* ebp pushed, the stack aligned to 8, four registers pushed */
+    put32(node + 4, 0);
+    if (get32(node + 0x14) == 0 && get32(node + 8) == 0) return eax_in & 0xFFFFFF00u;
+    eax = shape_test(node + 0x18, a, b, frame - 28);
+    if (!(eax & 0xFFu)) return eax & 0xFFFFFF00u;
+    if (get32(node + 8) == 0) {
+        uint32_t n = get32(node + 0x14), i;
+        if (n == 0) return eax & 0xFFFFFF00u;
+        for (i = 0; i < n; i++)
+            if (raycast(get32(node + 0x10) + i * 0x68, a, b, hit, frame - 32) & 0xFFu) bl = 1, put32(node + 4, i);
+        return ((n * 0x68) & 0xFFFFFF00u) | bl;
+    }
+    for (uint32_t k = 0; k < 0x2880; k += 0x510)
+        if (mesh_probe(get32(node + 8) + k, a, b, hit, 1, frame - 32) & 0xFFu) bl = 1;
+    return bl;                                      /* eax 1 from the last round, its low byte bl */
+}
+void fc_wrap_00443A20(void) {
+    static hot_check c = { "0x00443A20", 0, 0 };
+    if (off()) { fc_orig_00443A20(); return; }
+    uint32_t node = g_ecx, a = get32(g_esp + 4), b = get32(g_esp + 8), hit = get32(g_esp + 12);
+    uint8_t was[12];
+    if (checking()) memcpy(was, (const void*)ADDR(hit), 12);
+    uint32_t eax = mesh_probe(node, a, b, hit, g_eax, g_esp);
+    if (checking()) check_walk(&c, fc_orig_00443A20, node, eax, 16, hit, was);
+    g_eax = eax;
+    g_esp += 16;
+}
+
+/* 0x00446A60, the game's own: whether a sphere of radius r (in xmm3, as a
+ * movss leaves it) about the segment a-b touches a triangle. */
+static uint32_t sphere_triangle(uint32_t tri, uint32_t a, uint32_t b, float r, uint32_t at) {
+    uint32_t args[2] = { a, b };
+    memset(&g_xmm[3], 0, sizeof g_xmm[3]);
+    g_xmm[3].f32[0] = r;
+    return call_original(sub_00446A60, tri, at, 2, args);
+}
+/* MeshTest 0x00443940, thiscall bool (node *this, a, b), the radius r in xmm3,
+ * ret 8: whether the sphere about the segment touches any triangle under the
+ * node: its box by 0x00442730, its eight children, or its triangles by
+ * 0x00446A60, the first that does marked at +4. */
+static uint32_t mesh_test(uint32_t node, uint32_t a, uint32_t b, float r, uint32_t eax_in, uint32_t esp) {
+    uint32_t frame = (esp - 4) & ~7u;               /* ebp pushed, the stack aligned to 8, 12 bytes and three registers */
+    put32(node + 4, 0);
+    if (get32(node + 0x14) == 0 && get32(node + 8) == 0) return eax_in & 0xFFFFFF00u;
+    uint32_t eax = shape_test_within(node + 0x18, a, b, r, frame - 36);
+    if (!(eax & 0xFFu)) return eax & 0xFFFFFF00u;
+    if (get32(node + 8) == 0) {
+        uint32_t n = get32(node + 0x14), t = get32(node + 0x10), i;
+        for (i = 0; i < n; i++)
+            if ((eax = sphere_triangle(t + i * 0x68, a, b, r, frame - 36)) & 0xFFu) { put32(node + 4, i); return (eax & 0xFFFFFF00u) | 1u; }
+        return eax & 0xFFFFFF00u;
+    }
+    for (uint32_t k = 0; k < 0x2880; k += 0x510)
+        if ((eax = mesh_test(get32(node + 8) + k, a, b, r, eax, frame - 36)) & 0xFFu) return (eax & 0xFFFFFF00u) | 1u;
+    return eax & 0xFFFFFF00u;
+}
+void fc_wrap_00443940(void) {
+    static hot_check c = { "0x00443940", 0, 0 };
+    if (off()) { fc_orig_00443940(); return; }
+    uint32_t node = g_ecx, a = get32(g_esp + 4), b = get32(g_esp + 8);
+    xmm_t radius = g_xmm[3];
+    uint32_t eax = mesh_test(node, a, b, radius.f32[0], g_eax, g_esp);
+    if (checking()) { g_xmm[3] = radius; check_with(&c, fc_orig_00443940, node, eax, 12); }
+    g_eax = eax;
+    g_esp += 12;
+}
+
+/* 0x00443AF0, thiscall node* (node *this, x, a, b, float hit[3], node *skip[8]),
+ * ret 0x14: the first node under this one whose triangles the segment hits,
+ * leaving out the eight in skip; each child it goes into is told its parent
+ * (+0xC). x is only handed down. */
+static uint32_t mesh_find(uint32_t node, uint32_t x, uint32_t a, uint32_t b, uint32_t hit, uint32_t skip, uint32_t esp) {
+    /* four registers pushed */
+    put32(node + 4, 0);
+    if (get32(node + 0x14) == 0 && get32(node + 8) == 0) return 0;
+    for (uint32_t k = 0; k < 8; k++) if (get32(skip + 4 * k) == node) return 0;
+    if (!(shape_test(node + 0x18, a, b, esp - 28) & 0xFFu)) return 0;
+    if (get32(node + 8) == 0) {
+        uint32_t n = get32(node + 0x14), i;
+        for (i = 0; i < n; i++)
+            if (raycast(get32(node + 0x10) + i * 0x68, a, b, hit, esp - 32) & 0xFFu) { put32(node + 4, i); return node; }
+        return 0;
+    }
+    for (uint32_t k = 0; k < 0x2880; k += 0x510) {
+        uint32_t child = get32(node + 8) + k, found;
+        put32(child + 0xC, node);
+        if ((found = mesh_find(child, x, a, b, hit, skip, esp - 40)) != 0) return found;
+    }
+    return 0;
+}
+void fc_wrap_00443AF0(void) {
+    static hot_check c = { "0x00443AF0", 0, 0 };
+    if (off()) { fc_orig_00443AF0(); return; }
+    uint32_t node = g_ecx, x = get32(g_esp + 4), a = get32(g_esp + 8), b = get32(g_esp + 12), hit = get32(g_esp + 16);
+    uint32_t skip = get32(g_esp + 20);
+    uint8_t was[12];
+    if (checking()) memcpy(was, (const void*)ADDR(hit), 12);
+    uint32_t eax = mesh_find(node, x, a, b, hit, skip, g_esp);
+    if (checking()) check_walk(&c, fc_orig_00443AF0, node, eax, 24, hit, was);
+    g_eax = eax;
+    g_esp += 24;
+}
+
+/* ---- 0x00465400 ShaderConstants_Set ------------------------------------------------
+ * (first register in ecx, the values in edx, the count on the stack, taken off
+ * by the caller): the game keeps the vertex shader constants it last set
+ * (0x01383D90, 16 bytes a register; 0x0079A750 a byte a register for "kept"),
+ * and only where one of those it is asked to set is not kept, or differs (as
+ * ucomiss says: a number not a number is never the same), copies them all
+ * and calls SetVertexShaderConstantF, whose answer it returns. Most draws ask
+ * for what is already there; that answer, 0, is given here. */
+void fc_orig_00465400(void);
+static int constants_kept(uint32_t reg, uint32_t data, uint32_t n) {
+    for (uint32_t i = n; i-- > 0;) {
+        if (MEM8(0x0079A750 + reg + i) == 0) return 0;
+        uint32_t kept = 0x01383D90 + (reg + i) * 16, now = data + i * 16;
+        for (uint32_t k = 0; k < 16; k += 4)
+            if (!(guest_float(kept + k) == guest_float(now + k))) return 0;
+    }
+    return 1;
+}
+void fc_wrap_00465400(void) {
+    static hot_check c = { "0x00465400", 0, 0 };
+    if (off()) { fc_orig_00465400(); return; }
+    uint32_t reg = g_ecx, data = g_edx, n = get32(g_esp + 4);
+    if (n != 0 && !constants_kept(reg, data, n)) { fc_orig_00465400(); return; }
+    if (checking()) { g_edx = data; check_with(&c, fc_orig_00465400, reg, 0, 4); }
+    g_eax = 0;
+    g_esp += 4;                                     /* the return address only */
+}
+
 /* ---- 0x00467740: a depth-sorted triangle ------------------------------------------ */
 void fc_orig_00467740(void);
 #if defined(HLE_WITH_D3D9)
 void hle_d3dx_matrix_multiply(float* r, const float* a, const float* b);
 void sub_00524D15(void);                            /* the game's sinf, SSE2: xmm0 in, xmm0 out */
 
-static uint32_t get32(uint32_t at) { uint32_t v; memcpy(&v, (const void*)ADDR(at), 4); return v; }
-static void put32(uint32_t at, uint32_t v) { memcpy((void*)ADDR(at), &v, 4); }
 static void put_float(uint32_t at, float f) { memcpy((void*)ADDR(at), &f, 4); }
 /* cvttss2si: truncated, and 0x80000000 for what does not fit or is not a number */
 static int32_t cvtt(float f) { return f >= -2147483648.0f && f < 2147483648.0f ? (int32_t)f : INT32_MIN; }

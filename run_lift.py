@@ -85,11 +85,17 @@ HOOKS = {0x004FD597, 0x00504ABF, 0x00504A01, 0x00522510, 0x004FE110}
 #   0x00442820  always answering no, which the host answers itself; the
 #   0x00446D60  originals run for the rest (src/common/hot.c): a segment and
 #               a plane, a segment and a shape of twelve faces, a raycast
-#               down onto a triangle.
+#               down onto a triangle;
+#   0x00443A20  and the octree walks that call them, done by the host whole
+#   0x00443AF0  (MeshProbe, and a walk for the first node hit; MeshTest and
+#   0x00443940  its shape test, the same for a sphere about the segment).
+#   0x00442730
 #   0x00467740  a triangle the game sorts by depth and draws itself: done by
 #               the host whole where D3DX is the host's own.
+#   0x00465400  ShaderConstants_Set: answered by the host when what it is
+#               asked to set is set already.
 WRAPS = {0x004802C0, 0x004C11A0, 0x00477580, 0x00477180, 0x004886D0, 0x004459B0, 0x00442820, 0x00446D60,
-         0x00467740}
+         0x00443A20, 0x00443AF0, 0x00443940, 0x00442730, 0x00467740, 0x00465400}
 
 # Additions to the game itself: C run after the instruction at the address.
 # The lift stays faithful; a patch is for what the original cannot have.

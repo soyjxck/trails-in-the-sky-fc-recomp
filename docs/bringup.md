@@ -1298,3 +1298,24 @@ Linux 17.1 M plane tests, 1.9 M shapes, 6.3 M raycasts, 3.4 M triangles; on the
 Switch build under Ryujinx 25.3 M, 2.9 M, 9.3 M and 4.9 M. None different.
 Walking about the fair on Linux with the PC busy (77% load from other work):
 the game's part of a frame 3.0-3.5 ms with them, 3.6-4.2 ms without.
+
+Then the octree walks above them, done whole: MeshProbe 0x00443A20 (the
+highest hit of a segment under a node), 0x00443AF0 (the first node hit,
+some left out, each child told its parent), MeshTest 0x00443940 and its
+shape test 0x00442730 (a sphere about the segment: the shape's faces
+against the radius, handed over in xmm3, and the game's own sphere and
+triangle test 0x00446A60 at the leaves); and ShaderConstants_Set 0x00465400,
+answered when the constants it is asked for are those it set last (it
+keeps them), which is most of the draws. An original that native code calls
+is called at the stack depth the game's own caller would give it
+(`call_original`, with each walk's frame as the original lays it out,
+aligned where it aligns): the Windows host's check found eax's upper bits
+differing by 0x100 from a plane test whose answer leaves an address of the
+stack there. Every caller reads only the low byte, but the check is of the
+whole register, and passes now: Linux in the fair and the Windows host on
+the short route (MSVC's 32-bit build: 19.7 M constant sets, 18.4 M plane
+tests, 17.1 M raycasts, 5.2 M walks), none different. Under Ryujinx these
+five were not checked: its installation was changed under it (its system
+folder made a link to a folder without the keys and firmware), and it
+starts no program now. Walking about the fair on Linux, all nine: the
+game's part of a frame 2.6-2.9 ms with them, 3.4-4.0 without.
