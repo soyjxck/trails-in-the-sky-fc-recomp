@@ -1058,6 +1058,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--voice-log")) voice_log = 1;
         else if (!strcmp(argv[i], "--movie-log")) { extern int fc_movie_log; fc_movie_log = 1; }
         else if (!strcmp(argv[i], "--trace") && i + 1 < argc) setenv("HLE_SHIMTRACE", argv[++i], 1);
+        /* the game's functions done natively (src/common/hot.c): each answer checked against the original, or none */
+        else if (!strcmp(argv[i], "--hot-check")) setenv("FC_HOT_CHECK", "1", 1);
+        else if (!strcmp(argv[i], "--no-hot")) setenv("FC_HOT_OFF", "1", 1);
         else exe = argv[i];
     }
 #ifdef __SWITCH__
@@ -1102,6 +1105,7 @@ int main(int argc, char** argv) {
                         "                       [--shots DIR] [--shot-every N] [--watch S] [--perf S] [--perf-detail]\n"
                         "                       [--stream | --no-stream] [--gl-plain] [--aside | --no-aside] [--watch-picture N]\n"
                         "                       [--watch-game N] [--read-quarter] [--upload 0-3] [--pictures N | --no-pictures]\n"
+                        "                       [--hot-check | --no-hot]\n"
                         "                       [--fps N (0 = no limit)] [--original-limiter] <path to ed6_win_DX9.exe>\n");
         return 1;
     }

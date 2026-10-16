@@ -1235,3 +1235,45 @@ stream takes the fair's drawing from 7.2 to 4.8 ms a frame.
 The test: `run/saves_057` (a copy of the save, made from the card), a script
 that loads it and walks south-east into the fair, `SAVES_BASE` in
 `tools/run_portable.sh` for a run from other saves than `run/saves_base`.
+
+## 26. The game's own code on the console
+
+What the settings do to the fair's work (Linux, 30 frames a second, the
+player's settings otherwise): ShadowQuality 2 (theirs) 4.7-5.1 ms a frame, 1
+4.1-4.2, 0 3.8-3.9; LowEffect and MinimapMode change nothing. The sprite
+pages of section 25 are the people's shadows: at 2 each person casts the
+shape of their picture, and the page is that shape; at 1 they are gone and
+the scenery's shadows stay, at 0 those go too. A smaller picture changes
+nothing: the console's profile of the fair has no wait for the graphics
+chip in it.
+
+Tried on the lifted code and not kept:
+
+- the SSE registers as each function's own locals, loaded on entry and after
+  calls and written back before them, like the general registers
+  (`RECOMP_LOCAL_REGS`). GCC keeps such an array of unions in memory, not in
+  registers, since the lift reads one register as floats, 32-bit and 64-bit
+  words; so it only added the copying (5,355 loads and stores in
+  ParticleUpdateA against 3,491) and Linux was slower. Vector types in the
+  lifter's SSE output would be the way, and that is a rewrite of it.
+
+Kept:
+
+- the fork's `recomp_cond`, `recomp_cond_cf` and `recomp_eflags`, which every
+  conditional jump of the lift calls with the flag kind it has just stored,
+  are made inline (`RECOMP_FLAGS_INLINE`): a compiler at -O1 found them too
+  big and called them, 89 calls in ParticleUpdateA alone, where inlined they
+  fold to the guest's own compare. The program is 0.3 MB smaller; neither
+  Linux nor Ryujinx shows it faster or slower.
+- 0x004459B0, the console's top function in the fair (5.7%), done natively on
+  its common path (`src/common/hot.c`, a WRAP). It says whether a segment
+  meets a plane, for each face of each shape near anyone moving: 12,700 calls
+  a frame walking about the fair, 98% of them "no", which it answers itself
+  with the original's single-precision arithmetic in the original's order;
+  the rest, where the original works out the meeting point, run the
+  original. Checked against the original on every early answer
+  (`FC_HOT_CHECK=1`, `--hot-check` in args.txt): 17.1 million on Linux and
+  30.4 million in Ryujinx's run of the Switch build, none different. Walking
+  about the fair on Linux, the game's part of a frame is 2.6-2.8 ms with it
+  and 2.9-3.1 ms without (`FC_HOT_OFF=1`, `--no-hot`, the same build). Under
+  Ryujinx the walk varies too much from run to run to say.
