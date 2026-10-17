@@ -247,7 +247,7 @@ After, same script, same machine:
 | | main thread, each frame | of one core |
 |---|---|---|
 | the game's limiter, as shipped (`--original-limiter`) | 7.86 ms | 92% |
-| 125 a second (the default) | 4.26 ms | 50% |
+| 125 a second (then the default) | 4.26 ms | 50% |
 | 60 a second | 4.75 ms | 27% |
 
 ```
@@ -827,9 +827,9 @@ Not tried yet: a real finger on a real console, and a real mouse.
 
 ## 21. A borderless window, the mouse switched off, and three faults a player found
 
-The first hands-on session with the settings menu (4K, full screen,
-Direct3D 12, vertical sync, all chosen in the menu and all taken at the next
-start) asked for two things and turned up three faults.
+Playing with the settings menu by hand (4K, full screen, Direct3D 12,
+vertical sync, all chosen in the menu and all taken at the next start) asked
+for two things and turned up three faults.
 
 **A borderless window** (`[Recomp] Borderless=1` with `WindowMode=1`; the
 menu's Display row has it between Window and Full screen). The game stays in
@@ -886,7 +886,7 @@ borderless window drawn by Direct3D 9 on 12 cannot be photographed this way
 (the desktop's capture calls see what is under it), so that one is the
 player's to look at.
 
-The player looked: music, and no picture. **Direct3D 9 on 12 draws nothing
+On the screen: music, and no picture. **Direct3D 9 on 12 draws nothing
 into a window here.** Not into the borderless one (which then shows whatever
 was behind it) and not into an ordinary one (a black client area, seen in a
 grab of the screen); the game runs and its back buffer is right, and in full
@@ -909,8 +909,7 @@ be told from the loading before it.
 
 The run measured is a walk: a chapter 3 save loaded in Zeiss, out of doors,
 and 72 seconds of walking and turning the camera, unattended and muted, on
-the machine all of this was developed on (a 120 Hz screen, a GeForce RTX
-4090). The window of an unattended run is off screen, so these are the
+the development machine (a 120 Hz screen, a GeForce RTX 4090). The window of an unattended run is off screen, so these are the
 game's and the renderer's times, not the desktop's. Frames in which the test
 saved a picture are left out (a 3840 by 2160 PNG takes two to three
 seconds). Frame time in ms; the last column is the main thread's share of
@@ -918,7 +917,7 @@ one core.
 
 | | frames a second | median | 99% | 99.9% | main thread |
 |---|---|---|---|---|---|
-| Direct3D 9, 125 (the default) | 124.5 | 7.99 | 10.21 | 11.59 | 46% |
+| Direct3D 9, 125 (then the default) | 124.5 | 7.99 | 10.21 | 11.59 | 46% |
 | Vulkan (DXVK), 125 | 124.6 | 8.00 | 9.82 | 10.83 | 42% |
 | Direct3D 12, 125 | 124.5 | 7.99 | 10.13 | 11.31 | 48% |
 | Direct3D 9, `--fps 144` | 143.5 | 6.94 | 8.91 | 9.91 | 51% |
@@ -970,7 +969,7 @@ after.
 
 ## 23. Slow out of doors on the Switch: where a frame goes
 
-On a console the port "is perfect but stuttering", and worse out of doors
+On a console the port played well but stuttered, and worse out of doors
 than in. A console has no debugger and no profiler, so the first work was
 instruments, and they are in the portable host for good:
 
@@ -1035,10 +1034,9 @@ for the display, a scene that cannot quite be drawn at sixty comes out as
 frames of one refresh and of two, mixed. For a day the host answered that by
 presenting at every refresh while frames were ready in time and at every
 second one while they were not, going back up when the work had been short
-for a while. The player's word on it, unprompted, was that this is what makes
-another game on the same console feel bad, and not to do it: a rate that
-steps between sixty and thirty as the scene changes is felt at every step. It
-is gone. The rate is what `--fps` asks for and stays that: `--fps 0` is the
+for a while. That is what makes other games on the same console feel bad: a
+rate that steps between sixty and thirty as the scene changes is felt at
+every step. It is gone. The rate is what `--fps` asks for and stays that: `--fps 0` is the
 display's sixty with frames late when they are late, `--fps 30` every second
 refresh throughout.
 
@@ -1103,8 +1101,8 @@ off the game's own part of a frame on Linux, 1.9 ms against 2.3.
 
 ## 24. A menu goes black on a console, and nowhere else
 
-With section 23's build on a console: "the menu goes black, but sound keeps
-going". It has not been made to happen anywhere else. Linux and Ryujinx draw
+With section 23's build a console showed a menu going black while the sound
+went on. It has not been made to happen anywhere else. Linux and Ryujinx draw
 the logo movie, the title screen left alone for a minute, the load screen, a
 loaded save and the camp menu with that build, at the display's rate and at
 half of it (pictures of each; the emulator's by photographing its window).
@@ -1165,7 +1163,7 @@ buttons reach a movie, so that a test ends one as a player does.
 
 ## 25. A busy street at a third of the frame rate
 
-On a console, save 057 (Grancel, the Queen's birthday fair) ran at 12 to 17
+On a console, a save in Grancel at the Queen's birthday fair ran at 12 to 17
 frames a second a few steps into the fair, with the main thread at work 50
 to 66 ms a frame: the processor, not the graphics chip (a smaller picture
 would change nothing).
@@ -1232,14 +1230,15 @@ no longer watches the picture or the game unless asked: a read-back every
 30th frame made the processor wait for the graphics chip. Under Ryujinx the
 stream takes the fair's drawing from 7.2 to 4.8 ms a frame.
 
-The test: `run/saves_057` (a copy of the save, made from the card), a script
-that loads it and walks south-east into the fair, `SAVES_BASE` in
-`tools/run_portable.sh` for a run from other saves than `run/saves_base`.
+The test: a copy of that save in a saves folder of its own (saves are not
+in the repository), a script that loads it and walks south-east into the
+fair, and `SAVES_BASE` in `tools/run_portable.sh` for a run from other saves
+than `run/saves_base`.
 
 ## 26. The game's own code on the console
 
 What the settings do to the fair's work (Linux, 30 frames a second, the
-player's settings otherwise): ShadowQuality 2 (theirs) 4.7-5.1 ms a frame, 1
+save's own settings otherwise): ShadowQuality 2 (as saved) 4.7-5.1 ms a frame, 1
 4.1-4.2, 0 3.8-3.9; LowEffect and MinimapMode change nothing. The sprite
 pages of section 25 are the people's shadows: at 2 each person casts the
 shape of their picture, and the page is that shape; at 1 they are gone and
@@ -1296,7 +1295,7 @@ All four checked on every call walking about the fair, eax and, for the
 triangle, every byte it writes (record, three vertices, key, counters): on
 Linux 17.1 M plane tests, 1.9 M shapes, 6.3 M raycasts, 3.4 M triangles; on the
 Switch build under Ryujinx 25.3 M, 2.9 M, 9.3 M and 4.9 M. None different.
-Walking about the fair on Linux with the PC busy (77% load from other work):
+Walking about the fair on Linux with the machine busy with other work:
 the game's part of a frame 3.0-3.5 ms with them, 3.6-4.2 ms without.
 
 Then the octree walks above them, done whole: MeshProbe 0x00443A20 (the
@@ -1354,14 +1353,15 @@ through them, from the top down as the game's own went:
 - a PC (Windows, Linux): Uncapped, 120, 60, 30 FPS Limit;
 - the Switch: 60 and 30, its display's sixty and every second refresh.
 
-The byte says which is in force (0 Uncapped, 1 30, 2 60, 3 120, 4 a rate the
+The byte says which is in force (1 30, 2 60, 3 120, 5 Uncapped, 4 a rate the
 row has no place for, shown by its number) and the game saves it with the
-rest of its settings. On Windows the row and the settings menu's Frame rate
-(F2) are one setting, kept as `[Recomp] Fps`; with none kept, the byte the
-game read at start decides (30, 60 or 120; its 0 there is the old
-Automatic) and otherwise the rate is 120 (it was 125, which the row has no
-place for). Elsewhere the byte is the setting: a first run writes
-FpsMode=2, 60. `--fps` wins for a run on every host; `--original-limiter`
+rest of its settings. 0, the game's Automatic, is what every settings file
+holds until the row is pressed, so at start it means the host's default:
+120 on a PC (it was 125, which the row has no place for), 60 on the Switch.
+On Windows the row and the settings menu's Frame rate (F2) are one setting,
+kept as `[Recomp] Fps`; with none kept, the byte the game read at start
+decides. Elsewhere the byte is the setting: a first run writes FpsMode=2,
+60. `--fps` wins for a run on every host; `--original-limiter`
 leaves the game's waits and its row as they were.
 
 After, the same scenes:

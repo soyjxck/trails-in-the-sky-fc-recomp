@@ -7,7 +7,7 @@ The build: the Steam release of *The Legend of Heroes: Trails in the Sky*
 
 | | `ed6_win_DX9.exe` |
 |---|---|
-| sha256 | `99f08accd8e7d3a6...` |
+| sha256 | `99f08accd8e7d3a6a8732f8b965add4d51168431ad65bc0ec0a33adfae4daca2` |
 | PE timestamp | `0x632CA5C5`, 2022-09-22 18:13 UTC (the "configfix" build) |
 | Image | 0x00400000, size 0x01555000, **no relocations** |
 | Entry | 0x004FBDAA |
