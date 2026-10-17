@@ -19,6 +19,10 @@
  *               the result in edx:eax, truncated; out of range or not a
  *               number, the smallest 64-bit integer
  *   0x004FE110  memset(to, value, count), cdecl
+ *   0x004FD597  _CxxThrowException: a throw is this function, not an import.
+ *               Lifted as it is, it raises on the host's own exception
+ *               chain, which has never heard of the guest's frames;
+ *               pcrecomp's eh32 dispatches it over the guest's own.
  */
 #include <math.h>
 #include <stdint.h>
@@ -57,3 +61,6 @@ void fc_hook_004FE110(void) {
     g_eax = to;
     g_esp += 4;
 }
+
+void native32_shim_CxxThrowException(void);
+void fc_hook_004FD597(void) { native32_shim_CxxThrowException(); }

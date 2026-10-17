@@ -25,7 +25,6 @@
 
 #define SETARG(i, v) (MEM32(g_esp + 4u + 4u * (uint32_t)(i)) = (uint32_t)(v))
 #define ERROR_FILE_NOT_FOUND_ 2u
-#define ERROR_MOD_NOT_FOUND_ 126u
 #define ERROR_DEVICE_NOT_CONNECTED_ 1167u
 #define FC_IMAGE_BASE 0x00400000u
 

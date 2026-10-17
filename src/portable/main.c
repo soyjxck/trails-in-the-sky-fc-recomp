@@ -8,30 +8,18 @@
  * offset into it (win32hle's guest_mem.c), which is what an arm64 machine
  * needs.
  *
- * This is the bring-up host. It maps the exe, binds what win32hle already
- * answers, and gives every other import a stub that names itself when
- * called: --imports lists them, and a run goes until the game calls one.
+ * It maps the exe, binds what win32hle and this host answer, and gives any
+ * other import a stub that names itself when called: --imports lists them.
+ * The game's folder is the working directory; with no exe named, the game is
+ * looked for there and then beside the program.
  *
- *   trails-portable [options] <path to ed6_win_DX9.exe>
- *     --imports          list the imports with no answer and stop
- *     --saves DIR        the game's Saved Games folder (default: save)
- *     --headless         draw with no window (a test run)
- *     --frames N         leave after N frames have been presented
- *     --shots DIR        save the picture there as PNG: the first frame, and
- *     --shot-every N     every Nth after it
- *     --watch S          say every S seconds where the game is
- *     --perf S           say every S seconds where the frames' time went (the Switch does, every 10; 0 = not)
- *     --trace PREFIX     list every call out whose name starts so (IDirect3D...)
- *     --d3d-log          list render targets, viewports and what is read back
- *     --audio-out FILE   write everything the game's mixer puts out to a WAV file
- *     --script FILE      play a script of button presses (tests/*.txt)
- *     --mods DIR         the folder of mods (src/mods/vfs.c); on the Switch, mods
- *                        beside the program if nothing is said
- *     --voice-log        say which voice file each voiced line plays
+ *   trails-portable [options] [path to ed6_win_DX9.exe]
+ *
+ * usage() has the options.
  *
  * SoraVoice, if it is installed in the game's folder (voice\scena and
  * voice\ogg), works as it is: its scripts are loaded and its voices played
- * (src/portable/voice.c).
+ * (src/mods/voice.c).
  *
  * On the Switch there is no command line: the same options are read from
  * args.txt beside the program, if it is there, and what cannot work (started
@@ -46,11 +34,14 @@
 
 #include <pthread.h>
 #include <time.h>
+#include <unistd.h>
 #include "win32hle.h"
 #include "pe_loader.h"
 #include "host.h"
 #include "mods.h"
 #include <strings.h>
+
+#define FC_GAME_EXE "ed6_win_DX9.exe"
 
 /* On the Switch the game's folder is on the SD card and there is no console
  * to write to: what a run says goes to a file beside it, ending with a line
@@ -242,7 +233,7 @@ static void switch_start(int argc, char** argv) {
     svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
     fprintf(stderr, "started as \"%s\", home %s, applet type %d, memory %u MB of which %u MB in use\n", self, g_home,
             (int)appletGetAppletType(), (unsigned)(total >> 20), (unsigned)(used >> 20));
-    snprintf(g_exe, sizeof g_exe, "%s/game/ed6_win_DX9.exe", g_home);
+    snprintf(g_exe, sizeof g_exe, "%s/game/" FC_GAME_EXE, g_home);
     snprintf(g_saves, sizeof g_saves, "%s/save", g_home);
     snprintf(g_args, sizeof g_args, "%s/args.txt", g_home);
 
@@ -278,13 +269,9 @@ extern const uint32_t fc_entry_va;    /* recomp_dispatch.c */
 extern const win32hle_shim fc_win32_wide[];   /* win32_wide.c */
 void fc_set_saves_folder(const char* host_dir);
 
-/* ---- what the lift calls into (HOOKS and WRAPS in run_lift.py) -------------
- * Passed straight through for now: the Windows host's versions (the frame
- * limiter, play scripts, the mod loader) move here as this host grows. */
+/* ---- what the lift calls into (WRAPS in run_lift.py): the buttons and the clock */
 void fc_orig_004802C0(void);
 void fc_orig_004C11A0(void);
-void fc_orig_00477580(void);
-void fc_orig_00477180(void);
 
 /* ---- a play script (--script FILE) ---------------------------------------------------
  * The Windows host's, line for line (src/runtime/host.c has the format):
@@ -518,12 +505,11 @@ void fc_wrap_004802C0(void) {
  * its row, as they were. */
 #define FC_CLOCK_COUNTER 0x007C8B4Du  /* byte: a performance counter is in use */
 #ifdef __SWITCH__
-/* On a console the game's own loop is the default until the rest has been
- * seen to work on one (docs/bringup.md, 24): --fps 0 is the display's rate
- * with no loop. */
+/* The display paces a console's frames; the game's own 8 ms loop is left in
+ * (it never has to wait at sixty). */
 static int g_fps_limit = -1;
 #else
-static int g_fps_limit = 125;         /* the game's own ceiling */
+static int g_fps_limit = 120;
 #endif
 static int g_game_limiter;            /* --original-limiter */
 static int g_fps_given;               /* --fps */
@@ -659,10 +645,6 @@ void fc_wrap_004886D0(void) {
 /* ReadDirFiles (0x00477580) and ArchiveReadRaw (0x00477180) are wrapped by the
  * mod loader, src/mods/vfs.c, the same file as on Windows. */
 
-/* _CxxThrowException (the C runtime is linked into the exe, so a throw is
- * this function): dispatched over the guest's own frames by eh32. */
-void native32_shim_CxxThrowException(void);
-void fc_hook_004FD597(void) { native32_shim_CxxThrowException(); }
 
 /* ---- the sound as mixed, kept as a WAV file (--audio-out) ---------------------- */
 static FILE* g_wav;
@@ -745,46 +727,9 @@ static void perf_frame(void) {
     since = now, longest = 0, frames = over33 = over50 = 0;
 }
 
-/* ---- the game's own state, for a fault only a console shows (--watch-game N) --------
- * Every N frames, when any of it has changed: the screen fade (mode 1 in, 3
- * to a colour, 2 held; its level out of 255 and where it is going), the frame
- * clock (the last update's milliseconds, the scaled step, the scale), whether
- * the game thinks its window active and whether the pointer drives its menus,
- * and every window the game is drawing: its flags and how far its fade has
- * got (0x38FC and 0x38DC in the game's CWindow; flags 2 opening, 4 open, 8
- * closing, 0x10 closed, 0x80 not attended to, 0x800 fading in). */
-#define FC_FADE_LEVEL   0x0079A9F4u   /* float */
-#define FC_FADE_STEP    0x0079AA04u   /* float, a millisecond */
-#define FC_FADE_TARGET  0x0079AA0Cu   /* int */
-#define FC_FADE_MODE    0x0079AA12u   /* byte */
-#define FC_GAME_ACTIVE  0x00557E5Fu   /* byte */
-#define FC_FRAME_MS     0x006D9E9Cu   /* int: the clock's last update */
-#define FC_FRAME_STEP   0x006D9EBCu   /* float: what the game moves by */
-#define FC_TIME_SCALE   0x006D9EC4u   /* float */
-#define FC_REDRAW_LIST  0x007D1C00u   /* 32 window pointers */
-static unsigned g_game_watch;
-static float guest_float(uint32_t at) { float f; uint32_t u = MEM32(at); memcpy(&f, &u, 4); return f; }
-static void game_watch(unsigned frame) {
-    static char last[700];
-    char now[700];
-    int n = snprintf(now, sizeof now, "fade mode %u, level %.0f of %d (step %.3f a ms); the window %s; the pointer %u/%u; time x%.2f; windows",
-                     (unsigned)MEM8(FC_FADE_MODE), (double)guest_float(FC_FADE_LEVEL), (int)MEM32(FC_FADE_TARGET), (double)guest_float(FC_FADE_STEP),
-                     MEM8(FC_GAME_ACTIVE) ? "active" : "NOT active", (unsigned)MEM8(FC_MOUSE_IN_USE), (unsigned)MEM8(FC_MOUSE_MODE),
-                     (double)guest_float(FC_TIME_SCALE));
-    for (uint32_t i = 0; i < 32 && n < (int)sizeof now - 40; i++) {
-        uint32_t w = MEM32(FC_REDRAW_LIST + 4 * i), base, size;
-        if (w < 0x10000u || !hle_guest_region_of(w, &base, &size) || w + 0x3970u > base + size) continue;      /* not a window's worth of memory */
-        n += snprintf(now + n, sizeof now - (size_t)n, " %06X:%X/%.0f", w, (unsigned)MEM16(w + 0x38FC), (double)guest_float(w + 0x38DC));
-    }
-    if (!strcmp(now, last)) return;
-    memcpy(last, now, sizeof last);
-    fprintf(stderr, "[game] frame %u (%u ms, step %.1f): %s\n", frame, (unsigned)MEM32(FC_FRAME_MS), (double)guest_float(FC_FRAME_STEP), now);
-}
-
 static unsigned g_shot_every, g_frames, g_frame_now;
 static void on_frame(unsigned frame) {
     g_frame_now = frame;
-    if (g_game_watch && frame % g_game_watch == 0) game_watch(frame);
     if (g_perf_s) {
         static uint64_t last;
         uint64_t now = hle_now_ns();
@@ -1032,6 +977,39 @@ static uint32_t resolve_and_count(const char* name) {
     return hle_resolve_or_stub(name);
 }
 
+static void usage(void) {
+    fprintf(stderr,
+        "usage: trails-portable [options] [path to ed6_win_DX9.exe]\n"
+        "  the game's folder is the working directory; with no path, the game is looked for there and\n"
+        "  then beside this program. On the Switch the options are read from args.txt beside it.\n"
+        "  --saves DIR          the game's Saved Games folder (default: save)\n"
+        "  --fps N              frames a second (0 = no limit); also the game's Frame Rate option\n"
+        "  --original-limiter   the game's own frame waits, and its own Frame Rate row\n"
+        "  --mods DIR           the folder of mods (src/mods/vfs.c); on the Switch, mods beside the program\n"
+        "  --voice-log          say which voice file each voiced line plays\n"
+        "  --movie-log          a line a second while a movie plays\n"
+        "  --headless           draw with no window (a test run)\n"
+        "  --frames N           leave after N frames have been presented\n"
+        "  --script FILE        play a script of button presses (tests/*.txt)\n"
+        "  --script-in-movies   let a script's buttons reach a movie too\n"
+        "  --shots DIR          save the picture there as PNG: the first frame,\n"
+        "  --shot-every N         and every Nth after it\n"
+        "  --perf S             say every S seconds where the frames' time went (the Switch: every 10; 0 = not)\n"
+        "  --perf-detail        the drawing's part of that, split up\n"
+        "  --profile FILE       sample the game's thread (tools/profile_portable.py names the samples)\n"
+        "  --watch S            say every S seconds where the game is\n"
+        "  --hot-check          check every answer of the game functions done natively against the original\n"
+        "  --no-hot             the original game functions only\n"
+        "  --no-stream          vertices in a buffer a draw, not one stream\n"
+        "  --no-aside           the host's threads left on the core they start on\n"
+        "  --pictures N, --no-pictures   how many pictures GL keeps to use again (default 512)\n"
+        "  --read-quarter       read pictures back a quarter at a time (in-game pictures under Ryujinx)\n"
+        "  --d3d-log            list render targets, viewports and what is read back\n"
+        "  --audio-out FILE     write everything the game's mixer puts out to a WAV file\n"
+        "  --trace PREFIX       list every call out whose name starts so (IDirect3D...)\n"
+        "  --imports            list the imports with no answer and stop\n");
+}
+
 int main(int argc, char** argv) {
     const char* exe = NULL;
     const char* saves = "save";       /* --saves DIR: where the game's Saved Games folder is */
@@ -1041,14 +1019,6 @@ int main(int argc, char** argv) {
 #ifdef __SWITCH__
     static char text[2048];
     static char* words[64];
-    /* --stream and --aside were off here while a fault only a console showed
-     * was looked for; it was not theirs (docs/bringup.md, 24), and they are on
-     * again: args.txt's --no-stream and --no-aside switch them off. Before the
-     * first thread of the host's own is started. */
-    hle_d3d9_stream = 1, hle_threads_aside = 1;
-    /* The picture watch and the game watch (--watch-picture N, --watch-game N)
-     * are off again too: a read-back every Nth frame makes the processor wait
-     * for the graphics chip. */
     switch_start(argc, argv);
     /* The console gives a core's time by turns only to threads of priority
      * 59, which is where the C library starts every thread but this one. The
@@ -1078,17 +1048,11 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--watch") && i + 1 < argc) g_watch = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--perf") && i + 1 < argc) g_perf_s = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--perf-detail")) perf_detail = 1;
-        else if (!strcmp(argv[i], "--stream")) hle_d3d9_stream = 1;
         else if (!strcmp(argv[i], "--no-stream")) hle_d3d9_stream = 0;
-        else if (!strcmp(argv[i], "--gl-plain")) hle_d3d9_plain = 1;
         else if (!strcmp(argv[i], "--read-quarter")) hle_d3d9_read_quarter = 1;
-        else if (!strcmp(argv[i], "--upload") && i + 1 < argc) hle_d3d9_upload = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--no-pictures")) hle_d3d9_pictures = 0;
         else if (!strcmp(argv[i], "--pictures") && i + 1 < argc) hle_d3d9_pictures = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--aside")) hle_threads_aside = 1;
         else if (!strcmp(argv[i], "--no-aside")) hle_threads_aside = 0;
-        else if (!strcmp(argv[i], "--watch-picture") && i + 1 < argc) hle_d3d9_watch_picture = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--watch-game") && i + 1 < argc) g_game_watch = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--script-in-movies")) g_script_in_movies = 1;
         else if (!strcmp(argv[i], "--fps") && i + 1 < argc) g_fps_limit = atoi(argv[++i]), g_fps_given = 1;
         else if (!strcmp(argv[i], "--original-limiter")) g_fps_limit = -1, g_game_limiter = 1;
@@ -1103,22 +1067,33 @@ int main(int argc, char** argv) {
         /* the game's functions done natively (src/common/hot.c): each answer checked against the original, or none */
         else if (!strcmp(argv[i], "--hot-check")) setenv("FC_HOT_CHECK", "1", 1);
         else if (!strcmp(argv[i], "--no-hot")) setenv("FC_HOT_OFF", "1", 1);
+        else if (argv[i][0] == '-') fprintf(stderr, "[host] %s is not an option here: left out (docs/building.md lists them)\n", argv[i]);
         else exe = argv[i];
     }
 #ifdef __SWITCH__
     if (!exe) exe = g_exe;
+#else
+    /* With no exe named: the game's in the working directory, or in the
+     * program's own folder (a player's install, the program put beside the
+     * game's exe), which then becomes the working directory. */
+    if (!exe) {
+        static char own[1024];
+        struct stat st;
+        ssize_t n = readlink("/proc/self/exe", own, sizeof own - 1);
+        char* cut = n > 0 ? (own[n] = 0, strrchr(own, '/')) : NULL;
+        if (stat(FC_GAME_EXE, &st) == 0) exe = FC_GAME_EXE;
+        else if (cut && (*cut = 0, chdir(own) == 0) && stat(FC_GAME_EXE, &st) == 0) exe = FC_GAME_EXE;
+    }
 #endif
 #ifdef __SWITCH__
     if (g_fps_limit > 0 && g_fps_limit <= 60 && 60 % g_fps_limit == 0) hle_d3d9_vsync = 60 / g_fps_limit, g_fps_limit = 0;
 #endif
-    fprintf(stderr, "[host] frames: %s; vertices %s; draws say %s; other threads %s; textures filled again %s, %s (--upload %d)%s\n",
+    fprintf(stderr, "[host] frames: %s; vertices %s; other threads %s%s\n",
             g_fps_limit < 0 ? "the game's own limiter" : g_fps_limit > 0 ? "the host's limiter" :
             hle_d3d9_vsync > 1 ? "every second or third of the display's (--fps)" : "no limit but the display's",
-            hle_d3d9_stream ? "in one stream" : "in a buffer a draw (--no-stream)", hle_d3d9_plain ? "everything (--gl-plain)" : "what changed",
+            hle_d3d9_stream ? "in one stream" : "in a buffer a draw (--no-stream)",
             hle_threads_aside ? "kept off the first one's core" : "left where they start (--no-aside)",
-            hle_d3d9_upload & 1 ? "at four bits a channel where they are" : "at eight bits a channel",
-            hle_d3d9_upload & 2 ? "in place" : "made anew", hle_d3d9_upload,
-            hle_d3d9_pictures ? ", pictures GL has used again" : ", every picture sent (--no-pictures)");
+            hle_d3d9_pictures ? "; pictures GL has used again" : "; every picture sent (--no-pictures)");
     if (hle_d3d9_pictures) fprintf(stderr, "[host] up to %d pictures kept by GL (--pictures N)\n", hle_d3d9_pictures);
     if (g_shots) mkdir(g_shots, 0755);
     /* The game's folder is the working directory (the game counts on it):
@@ -1143,12 +1118,7 @@ int main(int argc, char** argv) {
 #endif
     catch_faults();
     if (!exe) {
-        fprintf(stderr, "usage: trails-portable [--imports] [--saves DIR] [--headless] [--frames N]\n"
-                        "                       [--shots DIR] [--shot-every N] [--watch S] [--perf S] [--perf-detail]\n"
-                        "                       [--stream | --no-stream] [--gl-plain] [--aside | --no-aside] [--watch-picture N]\n"
-                        "                       [--watch-game N] [--read-quarter] [--upload 0-3] [--pictures N | --no-pictures]\n"
-                        "                       [--hot-check | --no-hot]\n"
-                        "                       [--fps N (0 = no limit)] [--original-limiter] <path to ed6_win_DX9.exe>\n");
+        usage();
         return 1;
     }
     mkdir(saves, 0755);

@@ -13,10 +13,12 @@
  * and 30 on the Switch, whose display shows 60. The game's wait is told
  * there is nothing to wait for and the host paces the frames, exactly or by
  * the display. The byte says which rate is in force and the game saves it as
- * it saves the rest: 0 Uncapped, 1 30, 2 60, 3 120, 4 a rate the settings
- * menu or --fps chose that the row has no place for (shown by its number). At
- * start the byte the game read from its settings is the rate where nothing
- * else (--fps, the Windows settings) has said one.
+ * it saves the rest: 1 30, 2 60, 3 120, 5 Uncapped, 4 a rate the settings
+ * menu or --fps chose that the row has no place for (shown by its number).
+ * 0 is the game's own Automatic, which every settings file has until the row
+ * is pressed: at start that is the host's default rate, and any other value
+ * the byte the game read is the rate where nothing else (--fps, the Windows
+ * settings) has said one.
  *
  * The lifted game calls here from three places (run_lift.py PATCHES):
  *   0x004738B0  a frame is about to be presented, the byte read: fc_fps_mode
@@ -51,8 +53,8 @@ static const int k_rates[] = { 0, 120, 60, 30 };
 #endif
 #define RATES ((int)(sizeof k_rates / sizeof k_rates[0]))
 
-static int option_of(int fps) { return fps == 0 ? 0 : fps == 30 ? 1 : fps == 60 ? 2 : fps == 120 ? 3 : 4; }
-static int fps_of(int option) { return option == 0 ? 0 : option == 1 ? 30 : option == 2 ? 60 : option == 3 ? 120 : -1; }
+static int option_of(int fps) { return fps == 0 ? 5 : fps == 30 ? 1 : fps == 60 ? 2 : fps == 120 ? 3 : 4; }
+static int fps_of(int option) { return option == 5 ? 0 : option == 1 ? 30 : option == 2 ? 60 : option == 3 ? 120 : -1; }
 
 int fc_fps_mode(int option) {
     static int started;

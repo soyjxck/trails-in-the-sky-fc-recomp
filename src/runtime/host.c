@@ -16,6 +16,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
 #include <windows.h>
+#include <io.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -223,12 +224,6 @@ static void shim_SetUnhandledExceptionFilter(void) {
     RET(1);
 }
 
-/* _CxxThrowException (0x004FD597, a HOOK in run_lift.py). The C runtime is
- * linked into the exe, so a throw is this function and not an import: lifted
- * as it is, it raises on the host's SEH chain, which has never heard of the
- * guest's frames. native32's eh32 dispatches it over the guest's own. */
-void native32_shim_CxxThrowException(void);
-void fc_hook_004FD597(void) { native32_shim_CxxThrowException(); }
 
 /* ---- one instance ---------------------------------------------------------
  * The game opens a named mutex and, when it exists, brings the other window
@@ -598,7 +593,6 @@ void fc_wrap_004802C0(void) {
  * Sleep(0) for whatever is left of its 8 ms: thousands of turns, each three
  * calls out of the lifted code, and one CPU core kept at full load to wait.
  *
- * The host waits first, asleep, until the moment that loop would let the
  * The host does the waiting instead, asleep: a high-resolution timer for all
  * but the last millisecond and a half, then a short spin, and the game's loop
  * is told not to wait (its `wait` argument cleared). --fps N sets the rate
@@ -610,8 +604,8 @@ void fc_wrap_004802C0(void) {
  * The rate is also the Frame Rate row of the game's own OPTION screen, whose
  * own wait the host takes over (src/common/frame_option.c): a choice there
  * is in force at once and kept as [Recomp] Fps, like one in the settings
- * menu. With nothing kept, the rate is the one the game's row was left at
- * (30, 60 or 120), or 120. */
+ * menu. With nothing kept, the rate is the one the game's row was left at,
+ * or 120. */
 #define FC_CLOCK_LAST      0x007C8BB8u   /* i64: counter value at the last update */
 #define FC_CLOCK_LEFTOVER  0x007C8BC0u   /* i64: ticks left over after whole milliseconds */
 #define FC_CLOCK_PER_MS    0x007C8BD0u   /* i64: counter ticks per millisecond */
@@ -728,146 +722,6 @@ static int d3dx_direct(void) {
     g_d3dx_yaw_pitch_roll = (d3dx_pfff_t)(void*)GetProcAddress(m, "D3DXMatrixRotationYawPitchRoll");
     return g_d3dx_multiply && g_d3dx_transform_coord && g_d3dx_transpose && g_d3dx_normalize &&
            g_d3dx_translation && g_d3dx_scaling && g_d3dx_yaw_pitch_roll;
-}
-
-/* ---- what the game asks of D3DX (--d3dx-dump DIR) ------------------------------
- * A host without Windows has to answer these itself. With a folder given,
- * each shader's source, what D3DX assembled from it and the listing D3DX
- * made of that are written there, and the log says what every picture, copy
- * between surfaces and mesh the game asks for looks like (each kind once). */
-static const char* g_d3dx_dump;
-static void* d3dx_fn(const char* name) {
-    static HMODULE m;
-    if (!m) m = LoadLibraryA("d3dx9_43.dll");
-    return m ? (void*)GetProcAddress(m, name) : NULL;
-}
-static void d3dx_dump_file(const char* kind, int n, const char* ext, const void* data, size_t len) {
-    char path[MAX_PATH];
-    if (!g_d3dx_dump || !data) return;
-    _snprintf(path, sizeof path - 1, "%s\\%s_%02d.%s", g_d3dx_dump, kind, n, ext);
-    path[sizeof path - 1] = 0;
-    FILE* f = fopen(path, "wb");
-    if (f) { fwrite(data, 1, len, f); fclose(f); }
-}
-/* ID3DXBuffer: GetBufferPointer is its fourth method, GetBufferSize its fifth */
-static void* d3dx_buf_ptr(void* b) { return ((void* (WINAPI*)(void*))(*(void***)b)[3])(b); }
-static DWORD d3dx_buf_len(void* b) { return ((DWORD (WINAPI*)(void*))(*(void***)b)[4])(b); }
-/* 1 the first time a line is seen (up to 256 different lines) */
-static int d3dx_new_kind(const char* line) {
-    static char* seen[256];
-    static int n;
-    for (int i = 0; i < n; i++) if (!strcmp(seen[i], line)) return 0;
-    if (n < 256) seen[n++] = _strdup(line);
-    return 1;
-}
-
-static void shim_D3DXAssembleShader(void) {      /* (source, length, defines, include, flags, &shader, &errors) */
-    typedef HRESULT (WINAPI* fn_t)(const char*, UINT, const void*, void*, DWORD, void**, void**);
-    static int n;
-    HRESULT hr = ((fn_t)d3dx_fn("D3DXAssembleShader"))((const char*)PARG(0), ARG(1), PARG(2), PARG(3), ARG(4),
-                                                        (void**)PARG(5), (void**)PARG(6));
-    if (g_d3dx_dump) {
-        void** out = (void**)PARG(5);
-        d3dx_dump_file("shader", n, "txt", PARG(0), ARG(1));
-        if (SUCCEEDED(hr) && out && *out) d3dx_dump_file("shader", n, "bin", d3dx_buf_ptr(*out), d3dx_buf_len(*out));
-        fprintf(stderr, "[d3dx] AssembleShader #%d: %u bytes, flags 0x%X, defines %p, include %p -> 0x%08lX\n",
-                n, ARG(1), ARG(4), PARG(2), PARG(3), (unsigned long)hr);
-        n++;
-    }
-    g_eax = (uint32_t)hr;
-    RET(7);
-}
-
-static void shim_D3DXDisassembleShader(void) {   /* (tokens, colour, comments, &text) */
-    typedef HRESULT (WINAPI* fn_t)(const DWORD*, BOOL, const char*, void**);
-    static int n;
-    HRESULT hr = ((fn_t)d3dx_fn("D3DXDisassembleShader"))((const DWORD*)PARG(0), (BOOL)ARG(1), (const char*)PARG(2),
-                                                           (void**)PARG(3));
-    if (g_d3dx_dump) {
-        void** out = (void**)PARG(3);
-        if (SUCCEEDED(hr) && out && *out) d3dx_dump_file("listing", n, "txt", d3dx_buf_ptr(*out), d3dx_buf_len(*out));
-        fprintf(stderr, "[d3dx] DisassembleShader #%d: colour %u, comments %p -> 0x%08lX\n", n, ARG(1), PARG(2),
-                (unsigned long)hr);
-        n++;
-    }
-    g_eax = (uint32_t)hr;
-    RET(4);
-}
-
-/* (device, data, size, width, height, mip levels, usage, format, pool, filter, mip filter, colour key, &info,
- * palette, &texture) */
-static void shim_D3DXCreateTextureFromFileInMemoryEx(void) {
-    typedef HRESULT (WINAPI* fn_t)(void*, const void*, UINT, UINT, UINT, UINT, DWORD, DWORD, DWORD, DWORD, DWORD,
-                                   DWORD, void*, void*, void**);
-    HRESULT hr = ((fn_t)d3dx_fn("D3DXCreateTextureFromFileInMemoryEx"))(
-        PARG(0), PARG(1), ARG(2), ARG(3), ARG(4), ARG(5), ARG(6), ARG(7), ARG(8), ARG(9), ARG(10), ARG(11),
-        PARG(12), PARG(13), (void**)PARG(14));
-    if (g_d3dx_dump) {
-        const unsigned char* d = (const unsigned char*)PARG(1);
-        IDirect3DTexture9** out = (IDirect3DTexture9**)PARG(14);
-        D3DSURFACE_DESC got = { 0 };
-        DWORD levels = 0;
-        char line[400];
-        if (SUCCEEDED(hr) && out && *out) {
-            IDirect3DTexture9_GetLevelDesc(*out, 0, &got);
-            levels = IDirect3DTexture9_GetLevelCount(*out);
-        }
-        _snprintf(line, sizeof line - 1,
-                  "[d3dx] CreateTextureFromFileInMemoryEx: file '%.4s' (header %02X%02X%02X%02X ... %02X%02X%02X%02X at 84), "
-                  "asked %dx%d, %d levels, usage 0x%X, format %u, pool %u, filter 0x%X, mip filter 0x%X, key 0x%08X, "
-                  "info %s, palette %s -> 0x%08lX: %ux%u, %lu levels, format %u",
-                  (const char*)d, d[0], d[1], d[2], d[3], ARG(2) > 88 ? d[84] : 0, ARG(2) > 88 ? d[85] : 0,
-                  ARG(2) > 88 ? d[86] : 0, ARG(2) > 88 ? d[87] : 0, (int)ARG(3), (int)ARG(4), (int)ARG(5), ARG(6),
-                  ARG(7), ARG(8), ARG(9), ARG(10), ARG(11), PARG(12) ? "yes" : "no", PARG(13) ? "yes" : "no",
-                  (unsigned long)hr, got.Width, got.Height, (unsigned long)levels, (unsigned)got.Format);
-        line[sizeof line - 1] = 0;
-        if (d3dx_new_kind(line)) fprintf(stderr, "%s\n", line);
-    }
-    g_eax = (uint32_t)hr;
-    RET(15);
-}
-
-static int d3dx_rect(char* out, size_t n, const RECT* r) {
-    if (!r) return _snprintf(out, n, "all");
-    return _snprintf(out, n, "%ldx%ld", r->right - r->left, r->bottom - r->top);
-}
-
-/* (to, its palette, its rectangle, from, its palette, its rectangle, filter, colour key) */
-static void shim_D3DXLoadSurfaceFromSurface(void) {
-    typedef HRESULT (WINAPI* fn_t)(void*, const void*, const RECT*, void*, const void*, const RECT*, DWORD, DWORD);
-    HRESULT hr = ((fn_t)d3dx_fn("D3DXLoadSurfaceFromSurface"))(PARG(0), PARG(1), (const RECT*)PARG(2), PARG(3),
-                                                                PARG(4), (const RECT*)PARG(5), ARG(6), ARG(7));
-    if (g_d3dx_dump) {
-        D3DSURFACE_DESC to = { 0 }, from = { 0 };
-        char line[400], r1[40], r2[40];
-        if (PARG(0)) IDirect3DSurface9_GetDesc((IDirect3DSurface9*)PARG(0), &to);
-        if (PARG(3)) IDirect3DSurface9_GetDesc((IDirect3DSurface9*)PARG(3), &from);
-        d3dx_rect(r1, sizeof r1, (const RECT*)PARG(2));
-        d3dx_rect(r2, sizeof r2, (const RECT*)PARG(5));
-        _snprintf(line, sizeof line - 1,
-                  "[d3dx] LoadSurfaceFromSurface: to %ux%u format %u usage 0x%lX pool %u (rect %s) from %ux%u format %u "
-                  "usage 0x%lX pool %u (rect %s), filter 0x%X, key 0x%08X, palettes %s -> 0x%08lX",
-                  to.Width, to.Height, (unsigned)to.Format, (unsigned long)to.Usage, (unsigned)to.Pool, r1, from.Width,
-                  from.Height, (unsigned)from.Format, (unsigned long)from.Usage, (unsigned)from.Pool, r2, ARG(6),
-                  ARG(7), PARG(1) || PARG(4) ? "yes" : "no", (unsigned long)hr);
-        line[sizeof line - 1] = 0;
-        if (d3dx_new_kind(line)) fprintf(stderr, "%s\n", line);
-    }
-    g_eax = (uint32_t)hr;
-    RET(8);
-}
-
-/* (file, options, device, &adjacency, &materials, &effects, &how many materials, &mesh) */
-static void shim_D3DXLoadMeshFromXA(void) {
-    typedef HRESULT (WINAPI* fn_t)(const char*, DWORD, void*, void**, void**, void**, DWORD*, void**);
-    HRESULT hr = ((fn_t)d3dx_fn("D3DXLoadMeshFromXA"))((const char*)PARG(0), ARG(1), PARG(2), (void**)PARG(3),
-                                                        (void**)PARG(4), (void**)PARG(5), (DWORD*)PARG(6),
-                                                        (void**)PARG(7));
-    if (g_d3dx_dump)
-        fprintf(stderr, "[d3dx] LoadMeshFromXA '%s', options 0x%X -> 0x%08lX\n", (const char*)PARG(0), ARG(1),
-                (unsigned long)hr);
-    g_eax = (uint32_t)hr;
-    RET(8);
 }
 
 /* ---- Direct3D 9 -------------------------------------------------------------
@@ -1004,8 +858,6 @@ static uint64_t thread_cycles(HANDLE thread) {
     return thread && QueryThreadCycleTime(thread, &c) ? c : 0;
 }
 
-static uint64_t g_pace_cycles0, g_pace_tsc0;
-
 static void pace_report(void) {
     frame_times_write();
     if (g_pace_n < 2) return;
@@ -1119,9 +971,8 @@ static DWORD WINAPI desktop_watch(LPVOID unused) {
 
 /* Vertical sync in a window. Direct3D 9 (and Direct3D 9 on 12) asked to wait
  * for the screen while drawing into a window held every frame for 31 ms on
- * the machine this was measured on, a 120 Hz one: 32 frames a second, in a
- * window and in a borderless one alike, where the same setting in full
- * screen gave 120. DXVK does it properly by itself. For the other two the
+ * a 120 Hz screen: 32 frames a second, in a window and in a borderless one
+ * alike, where the same setting in full screen gave 120. DXVK does it properly by itself. For the other two the
  * device is made without the wait, and Present is followed by a wait for the
  * desktop's next composition (DwmFlush), which is the screen's own beat and
  * tears as little. */
@@ -1161,10 +1012,9 @@ static void patch_slot(void* obj, int slot, void* fn, void** real) {
  * The window's messages are pumped while it waits. A game in full screen
  * that the player has switched away from (Alt+Tab) gets its device back only
  * when its window is the active one again, and a window whose thread does
- * not answer cannot be made that: the first version slept here for ten
- * minutes with the window dead and the game then left. There is no limit
- * now: the wait ends when the device can be reset, or when the game is
- * closed. The game's clock is put forward by the time waited. */
+ * not answer cannot be made that: a wait without the pump leaves the window
+ * dead until it gives up. There is no limit: the wait ends when the device
+ * can be reset, or when the game is closed. The game's clock is put forward by the time waited. */
 static HRESULT WINAPI host_Reset(void* dev, D3DPRESENT_PARAMETERS* pp) {
     fc_menu_close();                    /* nothing of the menu's may be on a device that is reset */
     force_windowed(pp, "Reset");
@@ -1283,41 +1133,40 @@ static void shim_Direct3DCreate9(void) {
     RET(1);
 }
 
-/* DXVK's d3d9.dll: in the dxvk folder beside the exe, or beside the build
- * folder in a checkout. Its log and shader cache go beside this exe rather
- * than into the game's folder, which is the working directory. */
-static HMODULE load_dxvk(void) {
-    char exe[MAX_PATH], path[MAX_PATH];
+/* DXVK's d3d9.dll: in a dxvk folder beside the exe, or beside the build
+ * folder in a checkout. Its folder, or "" if there is none. */
+static const char* dxvk_folder(void) {
+    static char dir[MAX_PATH];
+    char exe[MAX_PATH], path[MAX_PATH + 16];
     GetModuleFileNameA(NULL, exe, MAX_PATH);
     char* cut = strrchr(exe, '\\');
     if (cut) *cut = 0;
-    SetEnvironmentVariableA("DXVK_LOG_PATH", exe);
-    SetEnvironmentVariableA("DXVK_STATE_CACHE_PATH", exe);
     for (int up = 0; up < 2; up++) {
-        _snprintf(path, sizeof path - 1, "%s\\%sdxvk\\d3d9.dll", exe, up ? "..\\" : "");
+        _snprintf(dir, sizeof dir - 1, "%s\\%sdxvk", exe, up ? "..\\" : "");
+        dir[sizeof dir - 1] = 0;
+        _snprintf(path, sizeof path - 1, "%s\\d3d9.dll", dir);
         path[sizeof path - 1] = 0;
-        HMODULE m = LoadLibraryExA(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-        if (m) return m;
+        if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return dir;
     }
-    return NULL;
+    return "";
+}
+/* Its log and shader cache are kept in that folder too, not in the game's. */
+static HMODULE load_dxvk(void) {
+    const char* dir = dxvk_folder();
+    char path[MAX_PATH + 16];
+    if (!dir[0]) return NULL;
+    SetEnvironmentVariableA("DXVK_LOG_PATH", dir);
+    SetEnvironmentVariableA("DXVK_STATE_CACHE_PATH", dir);
+    _snprintf(path, sizeof path - 1, "%s\\d3d9.dll", dir);
+    path[sizeof path - 1] = 0;
+    return LoadLibraryExA(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
 }
 
 const char* fc_host_renderer(void) {
     static const char* const words[] = { "d3d9", "vulkan", "d3d12" };
     return words[g_renderer];
 }
-int fc_host_has_dxvk(void) {
-    char exe[MAX_PATH], path[MAX_PATH];
-    GetModuleFileNameA(NULL, exe, MAX_PATH);
-    char* cut = strrchr(exe, '\\');
-    if (cut) *cut = 0;
-    for (int up = 0; up < 2; up++) {
-        _snprintf(path, sizeof path - 1, "%s\\%sdxvk\\d3d9.dll", exe, up ? "..\\" : "");
-        path[sizeof path - 1] = 0;
-        if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return 1;
-    }
-    return 0;
-}
+int fc_host_has_dxvk(void) { return dxvk_folder()[0] != 0; }
 
 /* The port's own settings are in the game's settings file, in a section of
  * their own, so that there is one file to edit:
@@ -1345,8 +1194,7 @@ void fc_rate_choose(int fps) {
     fprintf(stderr, "[host] frame rate, from the game's OPTION screen: %d\n", fps);
 }
 void fc_rate_start(int fps) {
-    /* 0 is the old Automatic there, never chosen as Uncapped: that is kept as Fps=0 */
-    if (g_fps_limit >= 0 && !g_fps_given && !g_fps_kept && fps > 0) g_fps_limit = fps;
+    if (g_fps_limit >= 0 && !g_fps_given && !g_fps_kept && fps >= 0) g_fps_limit = fps;
 }
 
 static void recomp_settings(void) {
@@ -1452,11 +1300,6 @@ static native32_shim_t g_shims[] = {
     { "D3DXMatrixScaling", shim_D3DXMatrixScaling },
     { "D3DXMatrixRotationYawPitchRoll", shim_D3DXMatrixRotationYawPitchRoll },
     { "Direct3DCreate9", shim_Direct3DCreate9 },
-    { "D3DXAssembleShader", shim_D3DXAssembleShader },
-    { "D3DXDisassembleShader", shim_D3DXDisassembleShader },
-    { "D3DXCreateTextureFromFileInMemoryEx", shim_D3DXCreateTextureFromFileInMemoryEx },
-    { "D3DXLoadSurfaceFromSurface", shim_D3DXLoadSurfaceFromSurface },
-    { "D3DXLoadMeshFromXA", shim_D3DXLoadMeshFromXA },
     { "GetModuleHandleW", shim_GetModuleHandleW },
     { "GetModuleHandleExW", shim_GetModuleHandleExW },
     { "GetModuleFileNameA", shim_GetModuleFileNameA },
@@ -1631,18 +1474,59 @@ static int dir_exists(const char* p) {
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+/* Started from Explorer (a double-click, a shortcut) the program has a console
+ * window of its own, which nobody wants behind the game: what it says goes to
+ * trails.log beside it instead (in the temporary folder where that cannot be
+ * written), and the window is let go. From a command prompt, whose console it
+ * shares, it writes there as before. The second process (native32_hold_image)
+ * is told the file's name (TRAILS_LOG) and adds to it: the standard handles
+ * it is handed do not all survive the first one's console going. */
+static void log_to(const char* path, const char* mode) {
+    if (!freopen(path, mode, stderr)) return;
+    setvbuf(stderr, NULL, _IONBF, 0);
+    _dup2(_fileno(stderr), _fileno(stdout));
+    setvbuf(stdout, NULL, _IONBF, 0);
+    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(_fileno(stderr)));
+    SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(_fileno(stdout)));
+}
+static void own_console_to_log(void) {
+    DWORD ids[2];
+    char path[MAX_PATH];
+    if (GetEnvironmentVariableA("TRAILS_LOG", path, sizeof path)) {
+        SetEnvironmentVariableA("TRAILS_LOG", NULL);
+        log_to(path, "a");
+        return;
+    }
+    if (GetEnvironmentVariableA("NATIVE32_HELD", path, sizeof path) || GetConsoleProcessList(ids, 2) != 1) return;
+    GetModuleFileNameA(NULL, path, MAX_PATH);
+    char* cut = strrchr(path, '\\');
+    if (!cut) return;
+    strcpy_s(cut + 1, MAX_PATH - (size_t)(cut + 1 - path), "trails.log");
+    FILE* f = fopen(path, "w");
+    if (!f) {
+        GetTempPathA(MAX_PATH, path);
+        strcat_s(path, MAX_PATH, "trails.log");
+        f = fopen(path, "w");
+    }
+    if (!f) return;
+    fclose(f);
+    log_to(path, "a");
+    SetEnvironmentVariableA("TRAILS_LOG", path);
+    FreeConsole();
+}
+
 int main(int argc, char** argv) {
     const char* game = NULL;
     const char* savedir = NULL;
     const char* script = NULL;
     const char* profile = NULL;
     const char* mods = NULL;
-    const char* extra = "";             /* --gameargs "...": appended to the guest's command line */
     char exe_full[MAX_PATH], game_full[MAX_PATH];
-    int run = 0, voice_log = 0;
+    int run = 1, voice_log = 0;
     /* Unbuffered: the log is the evidence, and ExitProcess flushes nothing
      * with the C runtime linked in (/MT). */
     setvbuf(stderr, NULL, _IONBF, 0);
+    own_console_to_log();
     {   /* Real pixels. Without this Windows gives a program a smaller pretend screen on a scaled desktop (a
          * 3840 by 2160 one at 125% is 3072 by 1728 to it) and stretches its window: a blurred picture, and no
          * way for a borderless window to be the size of the screen. */
@@ -1653,7 +1537,8 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         int n = recomp_trace_arg(argc, argv, i);
         if (n) { i += n - 1; continue; }
-        if (!strcmp(argv[i], "--run")) run = 1;
+        if (!strcmp(argv[i], "--run")) run = 1;              /* the default; kept for the scripts that say it */
+        else if (!strcmp(argv[i], "--dry-run")) run = 0;
         else if (!strcmp(argv[i], "--unattended")) g_unattended = 1;
         else if (!strcmp(argv[i], "--active")) g_force_active = 1;
         else if (!strcmp(argv[i], "--silent")) g_silent = 1;
@@ -1678,7 +1563,6 @@ int main(int argc, char** argv) {
             GetFullPathNameA(argv[++i], MAX_PATH, full, NULL);
             profile = full;
         }
-        else if (!strcmp(argv[i], "--gameargs") && i + 1 < argc) extra = argv[++i];
         else if (!strcmp(argv[i], "--watchdog") && i + 1 < argc) g_watchdog_s = strtoul(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--probe") && i + 1 < argc && g_nprobe < MAX_PROBES)
             g_probe[g_nprobe++] = strtoul(argv[++i], NULL, 0);
@@ -1687,31 +1571,35 @@ int main(int argc, char** argv) {
             native32_count_natives = 1;
             if (i + 1 < argc && atoi(argv[i + 1]) > 0) g_count_top = atoi(argv[++i]);
         }
-        else if (!strcmp(argv[i], "--d3dx-dump") && i + 1 < argc) g_d3dx_dump = argv[++i];
         else if (!strcmp(argv[i], "--slow-calls") && i + 1 < argc) native32_slow_ms = strtoul(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--callbacks")) native32_trace_callbacks = 1;
         else {
-            printf("usage: trails [--run] [--game DIR] [--savedir DIR] [--unattended] [--active] [--silent]\n"
+            printf("usage: trails [--dry-run] [--game DIR] [--savedir DIR] [--unattended] [--active] [--silent]\n"
                    "              [--renderer d3d9|vulkan|d3d12] [--mods DIR] [--voice-log]\n"
                    "              [--fps N (0 = no limit; default 120)] [--original-limiter]\n"
                    "              [--shots DIR] [--shot-every N] [--script FILE] [--watchdog S]\n"
-                   "              [--profile FILE] [--frame-times FILE] [--gameargs \"...\"]\n"
-                   "              [--probe VA] [--native-trace] [--callbacks] [--count-natives [N]] [--d3dx-dump DIR]\n"
+                   "              [--profile FILE] [--frame-times FILE]\n"
+                   "              [--probe VA] [--native-trace] [--callbacks] [--count-natives [N]]\n"
                    "              [--slow-calls MS]\n");
             recomp_trace_help();
-            return argv[i][1] == 'h' || argv[i][2] == 'h' ? 0 : 1;
+            return !strcmp(argv[i], "-h") || !strcmp(argv[i], "--help") || !strcmp(argv[i], "/?") ? 0 : 1;
         }
     }
     if (g_shot_every < 1) g_shot_every = 1;
-    /* The game folder: --game, or "Trails in the Sky FC" here or beside the build folder. */
+    /* The game folder: --game; "Trails in the Sky FC" here; the exe's own folder, where it has been put
+     * beside the game's (a player's install); or "Trails in the Sky FC" beside the build folder (a checkout). */
     if (!game) {
-        static char beside[MAX_PATH];
-        GetModuleFileNameA(NULL, beside, MAX_PATH);
-        char* cut = strrchr(beside, '\\');
+        static char own[MAX_PATH], beside[MAX_PATH];
+        GetModuleFileNameA(NULL, own, MAX_PATH);
+        char* cut = strrchr(own, '\\');
         if (cut) *cut = 0;
+        strcpy_s(beside, MAX_PATH, own);
         cut = strrchr(beside, '\\');
         if (cut) strcpy_s(cut + 1, MAX_PATH - (cut + 1 - beside), "Trails in the Sky FC");
-        game = dir_exists("Trails in the Sky FC") ? "Trails in the Sky FC" : beside;
+        _snprintf(exe_full, sizeof exe_full - 1, "%s\\" FC_EXE, own);
+        exe_full[sizeof exe_full - 1] = 0;
+        game = dir_exists("Trails in the Sky FC") ? "Trails in the Sky FC"
+             : GetFileAttributesA(exe_full) != INVALID_FILE_ATTRIBUTES ? own : beside;
     }
     GetFullPathNameA(game, MAX_PATH, game_full, NULL);
     _snprintf(exe_full, sizeof exe_full - 1, "%s\\" FC_EXE, game_full);
@@ -1737,7 +1625,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "warning: the image's range was not held; mapping may fail\n");
 
     strcpy_s(g_guest_exe, sizeof g_guest_exe, exe_full);
-    _snprintf(g_guest_cmdline, sizeof g_guest_cmdline - 1, "\"%s\"%s%s", g_guest_exe, *extra ? " " : "", extra);
+    _snprintf(g_guest_cmdline, sizeof g_guest_cmdline - 1, "\"%s\"", g_guest_exe);
     MultiByteToWideChar(CP_ACP, 0, g_guest_exe, -1, g_guest_exe_w, MAX_PATH);
     MultiByteToWideChar(CP_ACP, 0, g_guest_cmdline, -1, g_guest_cmdline_w,
                         sizeof g_guest_cmdline_w / sizeof g_guest_cmdline_w[0]);
@@ -1809,7 +1697,7 @@ int main(int argc, char** argv) {
     if (savedir) printf("  Saved Games folder %ls\n", g_savedir);
 
     if (!run) {
-        printf("\n(dry run: image mapped and bound; --run enters 0x%08X)\n", fc_entry_va);
+        printf("\n(dry run: image mapped and bound; without --dry-run it enters 0x%08X)\n", fc_entry_va);
         return 0;
     }
     /* The archives (ED6_DT*.dat) are opened relative to the game folder. */

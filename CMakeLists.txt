@@ -3,7 +3,7 @@
 #
 #   py -3 run_lift.py --all  # -> src/recomp/gen/  (needs work/functions.json)
 #   build.cmd                # vcvarsall amd64_x86 + CMake + Ninja -> build/trails.exe
-#   build\trails.exe --run
+#   build\trails.exe
 # =============================================================================
 cmake_minimum_required(VERSION 3.20)
 # The C runtime linked in (/MT): trails.exe runs on a PC without the x86
@@ -63,7 +63,7 @@ target_link_options(trails PRIVATE /BASE:0x60000000 /FIXED:NO /DYNAMICBASE:NO
                                    /MANIFESTUAC:NO)
 set(GEN_OPT "/O2" CACHE STRING "optimisation for the generated C")
 # Visual Studio 2026's compiler (19.50 and later) drops the sign test of a
-# 16-bit value shifted to the top of a register (found on Red Alert 2).
+# 16-bit value shifted to the top of a register (found by another pcrecomp game).
 if(MSVC_VERSION GREATER_EQUAL 1950)
   string(APPEND GEN_OPT ";/d2SSAOptimizer-")
 endif()

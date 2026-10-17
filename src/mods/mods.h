@@ -12,9 +12,6 @@ void mods_scan_game(const char* game_dir);
 /* Read every mod folder under mods_dir, in name order. Before the game runs. */
 void mods_scan(const char* mods_dir);
 
-/* How many mod folders were found. */
-int mods_count(void);
-
 /* Voices. If the game's folder, which is the working directory by now, has
  * SoraVoice's voice\ogg, its files are listed and the lines the scripts tag
  * are spoken. `log` says each tag and its file as they come. */

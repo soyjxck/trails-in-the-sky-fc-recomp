@@ -175,6 +175,7 @@ void fc_voice_tag(uint32_t at) {
     g_last_at = at, strcpy(g_last_digits, digits);
 
     job* j = calloc(1, sizeof *j);
+    if (!j) return;
     if (n == 10) snprintf(j->path, sizeof j->path, VOICE_DIR "/ch%s.ogg", digits);
     else if (n >= 6) snprintf(j->path, sizeof j->path, VOICE_DIR "/ed%s.ogg", digits + n - 4);
     else {

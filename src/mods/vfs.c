@@ -223,8 +223,6 @@ void mods_scan(const char* mods_dir) {
     }
 }
 
-int mods_count(void) { return g_nmods; }
-
 /* ReadDirFiles, wrapped: with the tables loaded, point the replaced entries
  * at their replacements. A later mod's file for the same entry takes the
  * earlier one's place, since the entry can only point at one. */

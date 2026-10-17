@@ -51,13 +51,9 @@ NAMES = os.path.join(_HERE, 'work', 'names.json')
 OUT = os.path.join(_HERE, 'src', 'recomp', 'gen')
 STATS = os.path.join(_HERE, 'work', 'lift_stats.json')
 
-# Entries a run finds that the catalog does not have (an unresolved ICALL
-# names its target), so a clean checkout lifts them too. None so far: the
-# catalog is seeded with config/function_starts.json (docs/bringup.md, 8).
-RUN_SEEDS = []
-
 # Functions whose body is the host's instead of the lift: the host defines
-# fc_hook_XXXXXXXX(void) and it runs like an import shim (src/runtime/host.c).
+# fc_hook_XXXXXXXX(void) and it runs like an import shim (src/common/crt.c,
+# src/runtime/host.c and src/portable/main.c).
 #   0x004FD597  _CxxThrowException. The C runtime is linked into the exe, so
 #               a throw is not an import native32 can answer by name: it is
 #               this function, which would raise on the host's SEH chain.
@@ -70,7 +66,8 @@ HOOKS = {0x004FD597, 0x00504ABF, 0x00504A01, 0x00522510, 0x004FE110}
 
 # Functions the host wraps: the lift is emitted as fc_orig_XXXXXXXX and the
 # function itself calls the host's fc_wrap_XXXXXXXX(void), which decides
-# whether and when to run the original (src/runtime/host.c).
+# whether and when to run the original (src/runtime/host.c and
+# src/portable/main.c; src/common and src/mods for those named there).
 #   0x004802C0  Input_Poll: the buttons held, in edx:eax. A play script
 #               (--script) answers instead of the keyboard.
 #   0x004C11A0  Clock_Update: the frame limiter is in it, as a loop that
@@ -101,7 +98,7 @@ WRAPS = {0x004802C0, 0x004C11A0, 0x00477580, 0x00477180, 0x004886D0, 0x004459B0,
 # The lift stays faithful; a patch is for what the original cannot have.
 #
 # Voices (SoraVoice's, which hooks the Windows game at the same places; the
-# hosts define the three functions, src/portable/voice.c):
+# hosts define the three functions, src/mods/voice.c):
 #   0x004E191C  the window's text reader has found a '#', the start of a
 #               command, at esi: a voice tag is '#', digits, 'v'.
 #   0x004E2EC4  the typing beep is about to be played: not over a voice.
@@ -230,13 +227,15 @@ def main():
     ap.add_argument('--virtual', action='store_true',
                     help='root the closure at every RTTI vtable method too')
     ap.add_argument('--split', type=int, default=250, help='functions per .c file')
-    # More entries a run found, on top of RUN_SEEDS (seed_from_log.py JSON).
+    # Entries a run found that the catalog does not have (an unresolved ICALL
+    # names its target): seed_from_log.py JSON. None so far; the catalog is
+    # seeded with config/function_starts.json (docs/bringup.md, 8).
     ap.add_argument('--seeds', default=os.path.join(_HERE, 'work', 'run_seeds.json'),
                     help='seed_from_log.py JSON of unresolved targets from runs')
     ap.add_argument('--no-names', action='store_true', help='keep the sub_XXXXXXXX names')
     args = ap.parse_args()
     if not os.path.exists(args.catalog):
-        sys.exit('no catalog at %s -- run disasm32.py first (README, Step by step)' % args.catalog)
+        sys.exit('no catalog at %s -- run disasm32.py first (docs/building.md)' % args.catalog)
 
     # The hooks and patches are at this build's addresses.
     stamp = exe_stamp(args.exe)
@@ -255,7 +254,7 @@ def main():
 
     # Vtable slots. Bound each by the next known entry: a slot landing mid-code
     # handed `ce` makes the extent walk descend the whole of .text.
-    want = {a for a in RUN_SEEDS if cs <= a < ce and a not in byaddr}
+    want = set()
     for path in [SEEDS] + ([args.seeds] if args.seeds else []):
         if os.path.exists(path):
             want |= {e['address'] for e in json.load(open(path))
@@ -287,7 +286,7 @@ def main():
     # Known targets become RECOMP_CALL; anything else a decoded `call` names
     # becomes RECOMP_ICALL, which reports at run time instead of failing the build.
     # precise carry: adc/sbb take their carry from the flag state that set it
-    # (64-bit adds and subtracts; off by default in lift32 only for Fury3).
+    # (64-bit adds and subtracts; lift32 has it off by default).
     patches = dict(PATCHES)
     lifter = Lifter(iat_map=iat, lifted=set(byaddr), precise_carry=True, precise_sbb=True)
     # Lifted into a scratch folder; at the end only the files that changed are
