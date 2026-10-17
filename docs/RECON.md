@@ -76,7 +76,7 @@ body that something branches to, and the exception funclets).
 ## The lift
 
 ```
-$ py -3 run_lift.py --all
+$ py -3 tools/run_lift.py --all
   lifted 7220   not-lifted stubs 0   errors 0   no terminator 87   with catch blocks 15
   2,030,021 lines of C in 29 files, 52.5s
   UNIMPLEMENTED instructions (lifted as no-ops): 43

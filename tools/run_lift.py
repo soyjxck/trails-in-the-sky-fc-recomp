@@ -15,9 +15,9 @@ ut99-recomp's run_lift.py), on pcrecomp's `tools/lift/generate.py` + `lift32`:
 Every vtable slot RTTI names is an entry (work/rtti_seeds.json): a method that
 is only ever called virtually is named by no call anywhere in the image.
 
-    py -3 run_lift.py --all
-    py -3 run_lift.py --max 2000
-    py -3 run_lift.py --roots 0x004B7280
+    py -3 tools/run_lift.py --all
+    py -3 tools/run_lift.py --max 2000
+    py -3 tools/run_lift.py --roots 0x004B7280
 """
 import argparse
 import json
@@ -28,10 +28,10 @@ import struct
 import sys
 import time
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the checkout
 # PCRECOMP picks another toolkit checkout, the same knob CMakeLists.txt has:
 # the lifter and the runtime header must come from the same tree.
-_TOOLS = os.path.join(os.environ.get('PCRECOMP', os.path.join(_HERE, 'pcrecomp')), 'tools')
+_TOOLS = os.path.join(os.environ.get('PCRECOMP', os.path.join(_ROOT, 'pcrecomp')), 'tools')
 sys.path.insert(0, os.path.join(_TOOLS, 'lift'))
 sys.path.insert(0, os.path.join(_TOOLS, 'pe'))
 
@@ -42,14 +42,14 @@ from generate import (EXTENT_REACH, closure, find_splits, true_extent,  # noqa: 
 from lift32 import Lifter                                  # noqa: E402
 from pe_analyze import analyze_pe, build_iat_map           # noqa: E402
 
-GAME = os.path.join(_HERE, 'Trails in the Sky FC')
+GAME = os.path.join(_ROOT, 'Trails in the Sky FC')
 EXE = os.path.join(GAME, 'ed6_win_DX9.exe')
 EXE_STAMP = 0x632CA5C5   # ed6_win_DX9.exe's PE timestamp: Steam's 2022-09-22 build (docs/RECON.md)
-CATALOG = os.path.join(_HERE, 'work', 'functions.json')
-SEEDS = os.path.join(_HERE, 'work', 'rtti_seeds.json')
-NAMES = os.path.join(_HERE, 'work', 'names.json')
-OUT = os.path.join(_HERE, 'src', 'recomp', 'gen')
-STATS = os.path.join(_HERE, 'work', 'lift_stats.json')
+CATALOG = os.path.join(_ROOT, 'work', 'functions.json')
+SEEDS = os.path.join(_ROOT, 'work', 'rtti_seeds.json')
+NAMES = os.path.join(_ROOT, 'work', 'names.json')
+OUT = os.path.join(_ROOT, 'src', 'recomp', 'gen')
+STATS = os.path.join(_ROOT, 'work', 'lift_stats.json')
 
 # Functions whose body is the host's instead of the lift: the host defines
 # fc_hook_XXXXXXXX(void) and it runs like an import shim (src/common/crt.c,
@@ -230,7 +230,7 @@ def main():
     # Entries a run found that the catalog does not have (an unresolved ICALL
     # names its target): seed_from_log.py JSON. None so far; the catalog is
     # seeded with config/function_starts.json (docs/bringup.md, 8).
-    ap.add_argument('--seeds', default=os.path.join(_HERE, 'work', 'run_seeds.json'),
+    ap.add_argument('--seeds', default=os.path.join(_ROOT, 'work', 'run_seeds.json'),
                     help='seed_from_log.py JSON of unresolved targets from runs')
     ap.add_argument('--no-names', action='store_true', help='keep the sub_XXXXXXXX names')
     args = ap.parse_args()

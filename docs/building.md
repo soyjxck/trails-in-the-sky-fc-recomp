@@ -1,7 +1,7 @@
 # Building from source
 
 The port is made in two steps: the game's exe is analysed and lifted to C
-on Windows (`run_lift.py`, into `src/recomp/gen/`, which is never
+on Windows (`tools/run_lift.py`, into `src/recomp/gen/`, which is never
 committed), and that C is built into a program for Windows, Linux or the
 Switch. [bringup.md](bringup.md) is the history: every wall on the way and
 how it was got past.
@@ -27,16 +27,15 @@ Copy the game's folder into the checkout as `Trails in the Sky FC\`, then:
 py -3 pcrecomp\tools\pe\pe_analyze.py "Trails in the Sky FC\ed6_win_DX9.exe" --json work\pe_analysis.json
 py -3 pcrecomp\tools\cpp\rtti.py "Trails in the Sky FC\ed6_win_DX9.exe" -o work\rtti.json --seeds work\rtti_seeds.json
 py -3 pcrecomp\tools\disasm\disasm32.py "Trails in the Sky FC\ed6_win_DX9.exe" --output work\functions.json --seed-functions config\function_starts.json
-py -3 run_lift.py --all
-build.cmd
-play.cmd
+py -3 tools\run_lift.py --all
+tools\build.cmd
+build\trails.exe
 ```
 
 The catalog takes about two minutes, the lift one, the build five. The seed
 file matters: without it the catalog splits some functions in two and the
-game runs wrong (bringup.md, 8). `build.cmd` builds into `build\`
-(`BUILD_DIR` names another folder); `play.cmd` plays with the log kept in
-`run\play.log` and passes its arguments on (`play.cmd --fps 60`).
+game runs wrong (bringup.md, 8). `tools\build.cmd` builds into `build\`
+(`BUILD_DIR` names another folder).
 
 `trails.exe` finds the game where `--game DIR` says, in `Trails in the Sky
 FC` in the working directory, in its own folder (put beside
@@ -63,7 +62,6 @@ prompt it writes there. Its options:
 | `--profile FILE` | sample the main thread and write where its time went |
 | `--frame-times FILE` | write every frame's length, and how much of it the main thread ran |
 | `--count-natives [N]`, `--slow-calls MS` | what the game calls outside its own code (the N most called), and which calls are slow |
-| `--d3dx-dump DIR` | what the game asks of D3DX: shader sources and what was assembled from them, written to DIR; pictures, surface copies and meshes, listed in the log |
 | `--calltrace FILE`, `--watch VA`, ... | pcrecomp's bring-up instruments (`trails.exe --help`) |
 
 ### Test runs
@@ -114,7 +112,7 @@ NRO was made from).
 
 | | |
 |---|---|
-| `run_lift.py` | the lift driver: `work/functions.json` -> `src/recomp/gen/`, and the host's wraps, hooks and patches |
+| `tools/run_lift.py` | the lift driver: `work/functions.json` -> `src/recomp/gen/`, and the host's wraps, hooks and patches |
 | `src/runtime/host.c` | the Windows host: the guest's identity, exceptions, the frame limiter, test modes, the fault report |
 | `src/ui/settings_menu.cpp` | the settings menu (Dear ImGui, in `third_party/imgui`, on the game's own Direct3D device) |
 | `src/portable/` | the host for everything else (Linux, the Switch): the Windows calls answered in C, the movies, the Switch's start |
@@ -123,6 +121,7 @@ NRO was made from).
 | `src/common/frame_option.c` | the game's Frame Rate option, as the host's frame rate |
 | `src/mods/vfs.c`, `tools/archive_diff.py` | mods as loose files, and making one from a whole-archive mod |
 | `src/mods/voice.c` | SoraVoice's voices, for every host; `src/runtime/voice_out.c` and `src/portable/voice_out.c` play them |
+| `tools/build.cmd` | the Windows build (the 32-bit compiler, CMake and Ninja) |
 | `tools/build_portable.sh`, `tools/run_portable.sh` | the Linux and Switch builds, and the unattended run |
 | `tools/switch_check.c` | `trails-check.nro`: what the game needs of a Switch and its card |
 | `tools/profile_portable.py` | names for a profile of the portable host |

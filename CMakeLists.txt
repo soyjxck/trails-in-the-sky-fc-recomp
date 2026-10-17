@@ -1,8 +1,8 @@
 # =============================================================================
 # Trails in the Sky FC - static recompilation host (32-bit, MSVC x86)
 #
-#   py -3 run_lift.py --all  # -> src/recomp/gen/  (needs work/functions.json)
-#   build.cmd                # vcvarsall amd64_x86 + CMake + Ninja -> build/trails.exe
+#   py -3 tools/run_lift.py --all   # -> src/recomp/gen/  (needs work/functions.json)
+#   tools\build.cmd                 # vcvarsall amd64_x86 + CMake + Ninja -> build/trails.exe
 #   build\trails.exe
 # =============================================================================
 cmake_minimum_required(VERSION 3.20)
@@ -12,7 +12,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 project(trails C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
-  message(FATAL_ERROR "the host must be 32-bit: use build.cmd (vcvarsall amd64_x86)")
+  message(FATAL_ERROR "the host must be 32-bit: use tools\\build.cmd (vcvarsall amd64_x86)")
 endif()
 if(NOT MSVC)
   message(FATAL_ERROR "runtime/native32 is MSVC x86 inline assembly")
@@ -22,10 +22,10 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 set(PCRECOMP "${CMAKE_SOURCE_DIR}/pcrecomp" CACHE PATH "pcrecomp checkout")
-set(GEN_DIR "${CMAKE_SOURCE_DIR}/src/recomp/gen" CACHE PATH "the lifted C (run_lift.py --out)")
+set(GEN_DIR "${CMAKE_SOURCE_DIR}/src/recomp/gen" CACHE PATH "the lifted C (tools/run_lift.py --out)")
 file(GLOB GEN_SOURCES CONFIGURE_DEPENDS "${GEN_DIR}/*.c")
 if(NOT GEN_SOURCES)
-  message(FATAL_ERROR "${GEN_DIR} is empty -- lift the game first: py -3 run_lift.py --all")
+  message(FATAL_ERROR "${GEN_DIR} is empty -- lift the game first: py -3 tools/run_lift.py --all")
 endif()
 
 add_executable(trails

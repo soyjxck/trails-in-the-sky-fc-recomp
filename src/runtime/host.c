@@ -1349,7 +1349,7 @@ recomp_func_t recomp_lookup_manual(uint32_t va) {
 void recomp_not_lifted(uint32_t va) {
     fprintf(stderr,
         "\n[not-lifted] sub_%08X  (called from 0x%08X)\n"
-        "  Widen the closure:  py -3 run_lift.py --roots 0x%08X  (or --max N, or --all)\n",
+        "  Widen the closure:  py -3 tools\\run_lift.py --roots 0x%08X  (or --max N, or --all)\n",
         va, g_cur_func, va);
     recomp_dump_trace("not-lifted");
     native32_dump_icalls(8);

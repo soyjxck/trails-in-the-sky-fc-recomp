@@ -35,7 +35,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Exe = Join-Path $Root "$Build\trails.exe"
-if (-not (Test-Path -LiteralPath $Exe)) { throw "no $Exe -- run build.cmd first" }
+if (-not (Test-Path -LiteralPath $Exe)) { throw "no $Exe -- run tools\build.cmd first" }
 $Run = Join-Path $Root 'run'
 $Saves = Join-Path $Run 'saves'
 $Shots = Join-Path $Run 'shots'
