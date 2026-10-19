@@ -13,6 +13,10 @@ Joy-Con or a Pro Controller and the touch screen. Mods that come as files
 (SoraVoice's voices, the Evolution soundtrack, retranslations) work on every
 platform.
 
+![Grancel's streets, running natively](docs/images/grancel.jpg)
+
+If this helped you, consider [buying me a coffee](https://ko-fi.com/soyjack)
+
 ## Installing
 
 You need the game: the Steam release of *The Legend of Heroes: Trails in
