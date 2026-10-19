@@ -13,10 +13,11 @@ Joy-Con or a Pro Controller and the touch screen. Mods that come as files
 (SoraVoice's voices, the Evolution soundtrack, retranslations) work on every
 platform.
 
-<p align="center">
-  <img src="docs/images/title.jpg" width="49%" alt="The title screen">
-  <img src="docs/images/opening.jpg" width="49%" alt="Estelle in the opening scene">
-</p>
+![The title screen](docs/images/title.jpg)
+
+![Estelle in the opening scene](docs/images/opening.jpg)
+
+![Grancel's streets](docs/images/grancel.jpg)
 
 If this helped you, consider [buying me a coffee](https://ko-fi.com/soyjack)
 
