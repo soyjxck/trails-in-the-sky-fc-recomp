@@ -1389,3 +1389,21 @@ leaves out a write of the value the file holds. The file comes out the
 same, byte for byte, and a press costs one frame of 100 ms on Linux (the
 disk is reached through WSL), 19-51 ms on Windows, 35-44 ms in Ryujinx,
 modded copy included.
+
+## 28. No keyboard on Linux
+
+On Linux the keys did nothing; a controller and the mouse worked. The game
+reads keys in `Input_Poll`: through DirectInput when it has a keyboard
+device, otherwise each of its 33 key bindings with `GetAsyncKeyState`.
+DirectInput is refused on the portable host, so it asks `GetAsyncKeyState`,
+which win32hle answers from the key state its windows keep. But only the
+DirectDraw-style window (`screen.c`) put SDL's keys there; the Direct3D 9
+window's event loop (`d3d9_gl.c`) took the mouse and the close button and
+let the keys go. It now passes them on with the same table, SDL's key to the
+virtual key and the scan code (`sdl_keys.h`, shared by both windows), and
+WM_KEYDOWN and WM_KEYUP reach the game's window as on Windows.
+
+Checked with SDL key events posted into a real window's queue (the offscreen
+video driver): Up, Down, Enter and Esc gave the game's own bits (1, 2, 40,
+10) and moved the title menu, opened OPTION and closed it, on the stock game
+and the modded copy.

@@ -85,8 +85,8 @@ its keys and firmware, as for any Switch program.
 
 It needs SDL2, SDL2_ttf, OpenGL ES 3 (Mesa) and FFmpeg 7 (`libavformat61`)
 from your distribution; it was built and tested on Debian 13. The saves and
-settings go in a `save` folder beside it. The keyboard is not supported yet:
-play with a controller.
+settings go in a `save` folder beside it. The keyboard, the mouse and a
+controller all work, the keys as the game's own bindings have them.
 
 ### Mods
 
@@ -128,7 +128,6 @@ in `args.txt` beside `trails.nro`, on one line (`--fps 30`, `--voice-log`).
 
 ## Known problems
 
-- Linux and the Switch have no keyboard yet.
 - Direct3D 12 shows nothing in a window (the game runs; full screen is
   fine), so a window always uses Direct3D 9.
 - The busiest scenes run below 60 frames a second on a Switch.
