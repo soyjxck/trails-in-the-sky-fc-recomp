@@ -81,7 +81,7 @@ has been made:
 
 ```
 tools/build_portable.sh linux      # build-linux/trails-portable
-tools/build_portable.sh switch     # build-switch/trails.nro and trails-check.nro
+tools/build_portable.sh switch     # build-switch/trails.nro
 ```
 
 Linux wants gcc, SDL2 and SDL2_ttf, OpenGL ES 3 (Mesa), libvorbisfile, and
@@ -123,7 +123,6 @@ NRO was made from).
 | `src/mods/voice.c` | SoraVoice's voices, for every host; `src/runtime/voice_out.c` and `src/portable/voice_out.c` play them |
 | `tools/build.cmd` | the Windows build (the 32-bit compiler, CMake and Ninja) |
 | `tools/build_portable.sh`, `tools/run_portable.sh` | the Linux and Switch builds, and the unattended run |
-| `tools/switch_check.c` | `trails-check.nro`: what the game needs of a Switch and its card |
 | `tools/profile_portable.py` | names for a profile of the portable host |
 | `config/function_starts.json` | the function starts the catalog is seeded with |
 | `tests/`, `tools/run_test.ps1` | play scripts and the unattended run that plays them |

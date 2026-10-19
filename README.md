@@ -63,9 +63,8 @@ about 3 GB free on its SD card.
    game, and keep R held until the menu appears. Choose Trails in the Sky FC.
 
 Start it that way, not from the Album: a program started from the Album is
-given too little memory for this game, and says so. `trails-check`, in the
-same menu, says whether the console and the card have what the game needs.
-The log is `/switch/trails/trails.log`.
+given too little memory for this game, and says so. The log is
+`/switch/trails/trails.log`.
 
 A modded copy can sit beside the stock one: make another folder, say
 `/switch/trails_modded/`, with its own copy of `trails.nro` and the modded
