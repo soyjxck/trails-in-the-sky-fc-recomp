@@ -13,7 +13,10 @@ Joy-Con or a Pro Controller and the touch screen. Mods that come as files
 (SoraVoice's voices, the Evolution soundtrack, retranslations) work on every
 platform.
 
-![Grancel's streets, running natively](docs/images/grancel.jpg)
+<p align="center">
+  <img src="docs/images/title.jpg" width="49%" alt="The title screen">
+  <img src="docs/images/opening.jpg" width="49%" alt="Estelle in the opening scene">
+</p>
 
 If this helped you, consider [buying me a coffee](https://ko-fi.com/soyjack)
 
