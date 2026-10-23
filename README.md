@@ -1,4 +1,4 @@
-# Trails in the Sky FC Recompiled
+# Trails in the Sky FC Recompiled & Switch Port
 
 A native port of *The Legend of Heroes: Trails in the Sky* (the first
 chapter, Steam's PC release) for Windows, the Nintendo Switch and Linux.
